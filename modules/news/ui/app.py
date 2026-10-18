@@ -115,6 +115,8 @@ REQUIRED_PLACEHOLDERS = ["[[ITEMS_JSON]]"]
 PLACEHOLDER_RE = re.compile(r"\[\[([A-Za-z0-9_]+)\]\]")
 VERSION_RE = re.compile(r"^[A-Za-z0-9._-]{1,20}$")
 TERM_RE = re.compile(r"^[^\s*][^*]{0,78}\*?$")
+# Same rule as the CHECK on news.share_hashtags.tag (no '#').
+HASHTAG_RE = re.compile(r"^\w{2,50}$")
 
 SOURCE_TYPES = {
     "google_news": "Google News search",
@@ -216,6 +218,22 @@ SETTING_HELP = {
         "raise": "Longer e-mails, nothing waits.",
         "lower": "Shorter e-mails; on a busy day lower-scored items arrive later.",
     },
+    "linkedin_share_enabled": {
+        "min": 0, "max": 1, "switch": True, "stage": 4,
+        "label": "\"Share on LinkedIn\" link in the e-mail",
+        "what": "Every news item in the digest gets a link that opens a new LinkedIn post with the title, "
+                "the article link and hashtags from the Sharing page. Nothing is posted until you click "
+                "Post in LinkedIn.",
+        "raise": "On — the link and the hashtags are shown under every item.",
+        "lower": "Off — the e-mail has no LinkedIn link.",
+    },
+    "share_max_hashtags": {
+        "min": 0, "max": 30, "stage": 4,
+        "label": "Hashtags per shared post (max)",
+        "what": "How many hashtags from the Sharing page are added to a post, in their sort order.",
+        "raise": "More hashtags — LinkedIn may show the post as spammy above a few.",
+        "lower": "Fewer hashtags. 0 = none.",
+    },
     "retention_days": {
         "min": 1, "max": 3650, "stage": 5,
         "label": "Keep collected news for (days)",
@@ -233,7 +251,7 @@ STAGES = {
     5: ("Housekeeping", "Old data is deleted automatically."),
 }
 
-AUDITED_TABLES = ["settings", "sources", "keywords", "digest_slots", "prompts"]
+AUDITED_TABLES = ["settings", "sources", "keywords", "digest_slots", "prompts", "share_hashtags"]
 
 
 # ============================================================
@@ -768,6 +786,59 @@ def _keywords_post():
         else:
             abort(400)
     return redirect(url_for("keywords_page"))
+
+
+# ============================================================
+# Routes — sharing (LinkedIn hashtags)
+# ============================================================
+
+@app.route("/sharing", methods=["GET", "POST"])
+@login_required
+def sharing_page():
+    if request.method == "POST":
+        return _sharing_post()
+    with db(readonly=True) as conn:
+        rows = conn.execute("SELECT * FROM share_hashtags "
+                            "ORDER BY is_active DESC, sort_order, tag").fetchall()
+        preview = {t: conn.execute("SELECT item_hashtags(%s) AS h", (t,)).fetchone()["h"]
+                   for t in ("cyber", "ai")}
+        cfg = {r["key"]: r["value"] for r in conn.execute(
+            "SELECT key, value FROM settings WHERE key IN ('linkedin_share_enabled', 'share_max_hashtags')")}
+    return render_template("sharing.html", rows=rows, preview=preview, cfg=cfg)
+
+
+@handle_db_errors("sharing_page")
+def _sharing_post():
+    action = request.form.get("action")
+    with db() as conn:
+        if action == "add":
+            tag = (request.form.get("tag") or "").strip().lstrip("#")
+            if not HASHTAG_RE.match(tag):
+                raise ValueError("Hashtag: 2–50 letters, digits or _, no spaces (e.g. ThreatIntel)")
+            topic = request.form.get("topic", "")
+            if topic not in TOPICS:
+                raise ValueError("Unknown topic")
+            conn.execute("INSERT INTO share_hashtags (tag, topic, sort_order, note) VALUES (%s, %s, %s, %s)",
+                         (tag, topic, int_field("sort_order", 0, 1000, "Order"),
+                          (request.form.get("note") or "").strip()[:200] or None))
+            flash(f"Added #{tag}.", "ok")
+        elif action == "order":
+            conn.execute("UPDATE share_hashtags SET sort_order = %s WHERE id = %s",
+                         (int_field("sort_order", 0, 1000, "Order"), int(request.form["id"])))
+            flash("Order saved.", "ok")
+        elif action == "toggle":
+            r = conn.execute("UPDATE share_hashtags SET is_active = NOT is_active WHERE id = %s "
+                             "RETURNING tag, is_active", (int(request.form["id"]),)).fetchone()
+            if r:
+                flash(f"#{r['tag']}: {'enabled' if r['is_active'] else 'disabled'}.", "ok")
+        elif action == "delete":
+            r = conn.execute("DELETE FROM share_hashtags WHERE id = %s RETURNING tag",
+                             (int(request.form["id"]),)).fetchone()
+            if r:
+                flash(f"Deleted #{r['tag']}.", "ok")
+        else:
+            abort(400)
+    return redirect(url_for("sharing_page"))
 
 
 # ============================================================

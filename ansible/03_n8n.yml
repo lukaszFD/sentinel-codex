@@ -10,6 +10,9 @@
 #             2. imports the News Radar workflow once; if a workflow with
 #                that id exists it is left alone, so edits made in n8n are
 #                never overwritten. Imported inactive — activate in n8n.
+#                To replace it with the repo version (after a change in
+#                modules/news/n8n): -e codex_workflow_reimport=true
+#                — overwrites edits made in n8n and leaves it inactive.
 #
 #             No Cyber Sentinel credential is used. The Gemini key is read
 #             by the workflow from Vault (sentinel-codex/api-keys/gemini).
@@ -125,7 +128,7 @@
       failed_when: false
 
     - name: "[03.2.X] Import News Radar"
-      when: codex_wf_exists.rc != 0
+      when: codex_wf_exists.rc != 0 or (codex_workflow_reimport | default(false) | bool)
       block:
         - name: "[03.2.2] Stage workflow JSON on the server"
           ansible.builtin.copy:
@@ -153,4 +156,8 @@
 
     - name: "[03.2.6] Summary"
       ansible.builtin.debug:
-        msg: "News Radar workflow: {{ 'imported now' if codex_wf_exists.rc != 0 else 'already in n8n, left unchanged' }} — activate it in n8n."
+        msg: >-
+          News Radar workflow:
+          {{ 'imported now — activate it in n8n'
+             if (codex_wf_exists.rc != 0 or (codex_workflow_reimport | default(false) | bool))
+             else 'already in n8n, left unchanged (-e codex_workflow_reimport=true to replace)' }}

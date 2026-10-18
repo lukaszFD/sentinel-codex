@@ -93,8 +93,14 @@ imported only if it is not in n8n yet.
 
 Edit `modules/news/n8n/src/*.js` or the node layout in
 `modules/news/n8n/build_workflow.py`, run `python3 build_workflow.py`, commit
-both. A workflow already in n8n is not replaced by playbook 03 — delete it in
-n8n first, or paste the changed node by hand.
+both. A workflow already in n8n is not replaced by playbook 03 unless you ask:
+
+```
+ansible-playbook 02_vault.yml 03_n8n.yml --limit vm-prox-dev -e codex_workflow_reimport=true
+```
+
+This overwrites edits made in n8n and leaves the workflow inactive — activate
+it again.
 
 ## Adding a module
 

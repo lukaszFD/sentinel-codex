@@ -3,6 +3,10 @@
 // only digest_id when the slot is due but nothing qualifies, otherwise one
 // row per item. Every dynamic value is HTML-escaped (titles and summaries
 // come from the internet).
+// LinkedIn: when share_enabled, each item gets a link that opens a new post
+// prefilled with title, link and the item's hashtags (news.share_hashtags).
+// The ?shareActive=true&text= form is not documented by LinkedIn; the
+// hashtags are also printed under the item so they can be copied by hand.
 // Mode: Run Once for All Items.
 
 const rows = $input.all().map((i) => i.json).filter((r) => r.digest_id);
@@ -19,6 +23,9 @@ const esc = (v) => String(v ?? '')
   .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 const safeUrl = (u) => (/^https?:\/\//i.test(u || '') ? esc(u) : '#');
 const local = (ts) => DateTime.fromISO(new Date(ts).toISOString()).setZone('Europe/Warsaw');
+
+const LINKEDIN_COMPOSE = 'https://www.linkedin.com/feed/?shareActive=true&text=';
+const shareText = (r) => [r.title, r.url, r.hashtags].filter(Boolean).join('\n\n');
 
 const SCORE_COLOR = { 5: '#f44336', 4: '#ff9800', 3: '#ffc107', 2: '#90a4ae', 1: '#607d8b' };
 const TOPICS = [
@@ -39,6 +46,11 @@ const card = (r) => {
     </div>
     ${summary ? `<div style="margin-top:6px;font-size:14px;line-height:1.5;color:#e0e0e0;">${esc(summary)}</div>` : ''}
     <div style="margin-top:6px;font-size:12px;color:#888;">${esc(r.source || '')} · ${esc(local(r.published_at).toFormat('dd.MM HH:mm'))}</div>
+    ${r.share_enabled ? `
+    <div style="margin-top:8px;font-size:12px;line-height:1.6;">
+      <a href="${esc(LINKEDIN_COMPOSE + encodeURIComponent(shareText(r)))}" style="display:inline-block;background:#0a66c2;color:#ffffff;text-decoration:none;font-weight:600;border-radius:12px;padding:2px 10px;margin-right:8px;">Udostępnij na LinkedIn</a>
+      ${r.hashtags ? `<span style="color:#9e9e9e;">${esc(r.hashtags)}</span>` : ''}
+    </div>` : ''}
   </div>`;
 };
 

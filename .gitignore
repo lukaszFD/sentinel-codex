@@ -7,6 +7,7 @@
 # Ansible secrets (same rule as Cyber Sentinel)
 /ansible/.vault_pass
 /ansible/group_vars/all/vault.yml
+/ansible/host_vars/*/vault.yml
 *.retry
 
 # Local env / logs

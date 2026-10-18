@@ -4,7 +4,8 @@
 # dev and prod run separate Vault instances: vault_root_token, if it
 # differs per host, goes to host_vars/<host>/vault.yml instead.
 
-ansible_become_password: ""
+# ---- SSH / sudo on the target (same as Cyber Sentinel) --------------------
+ansible_become_password: ""        # omit if the user has passwordless sudo
 
 # ---- HashiCorp Vault (same instance as Cyber Sentinel) --------------------
 # Root token of Cyber Sentinel's Vault — used by Ansible only (playbook 02),

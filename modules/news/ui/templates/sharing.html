@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block title %}Sharing{% endblock %}
+{% block content %}
+<h1>Sharing on LinkedIn</h1>
+<div class="help-box">
+  Every news item in the digest e-mail gets a <strong>Udostępnij na LinkedIn</strong> link. It opens a new LinkedIn
+  post with the title, the article link and the hashtags below; nothing is published until you press Post.
+  On a phone with the LinkedIn app the link opens the app.
+  <ul>
+    <li>A hashtag applies to news of its topic; <strong>Both</strong> applies to every item.</li>
+    <li>Lowest order first, at most <a href="{{ url_for('settings_page') }}#stage-4">{{ setting_label('share_max_hashtags') }}</a>
+      (now <strong>{{ cfg.get('share_max_hashtags')|num }}</strong>).</li>
+    <li>Write without <code>#</code>, CamelCase reads better: <code>ThreatIntel</code>.</li>
+    <li>Disable instead of delete: seed hashtags come back after a redeploy.</li>
+  </ul>
+  {% if cfg.get('linkedin_share_enabled') == 0 %}<strong>The LinkedIn link is switched off in Settings.</strong>{% endif %}
+</div>
+
+<section class="card">
+  <h2>What a post gets now</h2>
+  <table class="kv">
+    <tr><th>Cyber news</th><td class="mono">{{ preview.cyber or '—' }}</td></tr>
+    <tr><th>AI news</th><td class="mono">{{ preview.ai or '—' }}</td></tr>
+  </table>
+</section>
+
+<form method="post" class="card form-row">
+  <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+  <input type="hidden" name="action" value="add">
+  <label class="grow">Hashtag<input name="tag" required maxlength="51" placeholder="e.g. ZeroDay"></label>
+  <label>Topic<select name="topic">{% for k, v in TOPICS.items() %}<option value="{{ k }}">{{ v }}</option>{% endfor %}</select></label>
+  <label>Order<input class="num short" name="sort_order" type="number" min="0" max="1000" value="100"></label>
+  <label class="grow">Note<input name="note" maxlength="200"></label>
+  <button class="btn primary" type="submit">Add</button>
+</form>
+
+<section class="card">
+<table class="list">
+  <thead><tr><th>Hashtag</th><th>Topic</th><th>Order</th><th>Note</th><th></th></tr></thead>
+  <tbody>
+  {% for r in rows %}
+  <tr class="{{ 'row-off' if not r.is_active }}">
+    <td class="mono">#{{ r.tag }}</td>
+    <td>{{ TOPICS[r.topic] }}</td>
+    <td>
+      <form method="post" class="inline">
+        <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+        <input type="hidden" name="action" value="order"><input type="hidden" name="id" value="{{ r.id }}">
+        <input class="num short" name="sort_order" type="number" min="0" max="1000" value="{{ r.sort_order }}">
+        <button class="btn small ghost" type="submit">Save</button>
+      </form>
+    </td>
+    <td class="small muted">{{ r.note or '' }}</td>
+    <td class="row-actions">
+      <form method="post">
+        <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+        <input type="hidden" name="action" value="toggle"><input type="hidden" name="id" value="{{ r.id }}">
+        <button class="btn small ghost" type="submit">{{ 'Disable' if r.is_active else 'Enable' }}</button>
+      </form>
+      <form method="post" data-confirm="Delete #{{ r.tag }}?">
+        <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+        <input type="hidden" name="action" value="delete"><input type="hidden" name="id" value="{{ r.id }}">
+        <button class="btn small danger" type="submit">Delete</button>
+      </form>
+    </td>
+  </tr>
+  {% else %}<tr><td colspan="5" class="muted">No hashtags.</td></tr>{% endfor %}
+  </tbody>
+</table>
+</section>
+{% endblock %}

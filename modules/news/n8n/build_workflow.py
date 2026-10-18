@@ -140,7 +140,8 @@ nodes = [
        "    SELECT news.sp_digest_begin() AS digest_id\n"
        ")\n"
        "SELECT d.digest_id, i.id, i.source, i.topic, i.title, i.url, i.published_at,\n"
-       "       i.ai_score, i.ai_summary_pl, i.keyword_score\n"
+       "       i.ai_score, i.ai_summary_pl, i.keyword_score, i.hashtags,\n"
+       "       news.setting('linkedin_share_enabled') = 1 AS share_enabled\n"
        "FROM d\n"
        "LEFT JOIN news.v_digest_items i ON TRUE\n"
        "WHERE d.digest_id IS NOT NULL;",
