@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% from "_macros.html" import digest_tag %}
+{% block title %}Schedule{% endblock %}
+{% block content %}
+<h1>Digest schedule</h1>
+<p class="muted">Times (Europe/Warsaw) at which the digest e-mail goes out. The workflow runs every 15 minutes, so a digest arrives up to 15 minutes after its time. If n8n was down, only the latest missed digest is sent; nothing is lost — waiting news simply go into the next one. No e-mail is sent when there is nothing new.</p>
+{% if next_at %}<div class="flash info">Next digest: <strong>{{ next_at.strftime('%A %d.%m %H:%M') }}</strong></div>{% endif %}
+
+<form method="post" class="card form-row">
+  <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+  <input type="hidden" name="action" value="add">
+  <label>Time<input name="slot_time" type="time" required></label>
+  <label class="grow">Note<input name="note" maxlength="100" placeholder="e.g. evening"></label>
+  <button class="btn primary" type="submit">Add</button>
+</form>
+
+<section class="card">
+<table class="list">
+  <thead><tr><th>Time</th><th>Note</th><th>Status</th><th></th></tr></thead>
+  <tbody>
+  {% for s in slots %}
+  <tr class="{{ 'row-off' if not s.is_active }}">
+    <td class="mono">{{ s.slot_time.strftime('%H:%M') }}</td>
+    <td>{{ s.note or '' }}</td>
+    <td>{% if s.is_active %}<span class="tag ok">active</span>{% else %}<span class="tag">paused</span>{% endif %}</td>
+    <td class="row-actions">
+      <form method="post">
+        <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+        <input type="hidden" name="action" value="toggle"><input type="hidden" name="slot_time" value="{{ s.slot_time.strftime('%H:%M') }}">
+        <button class="btn small ghost" type="submit">{{ 'Pause' if s.is_active else 'Resume' }}</button>
+      </form>
+      <form method="post" data-confirm="Delete the {{ s.slot_time.strftime('%H:%M') }} digest?">
+        <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+        <input type="hidden" name="action" value="delete"><input type="hidden" name="slot_time" value="{{ s.slot_time.strftime('%H:%M') }}">
+        <button class="btn small danger" type="submit">Delete</button>
+      </form>
+    </td>
+  </tr>
+  {% else %}<tr><td colspan="4" class="muted">No digest times — nothing will be sent.</td></tr>{% endfor %}
+  </tbody>
+</table>
+</section>
+
+<section class="card">
+  <h2>Sent digests</h2>
+  <table class="list compact">
+    <thead><tr><th>Slot</th><th>Status</th><th>News</th><th>Attempts</th><th>Sent</th><th>Error</th></tr></thead>
+    <tbody>{% for d in log_rows %}
+      <tr><td class="small nowrap">{{ d.slot_at|dt }}</td><td>{{ digest_tag(d.status) }}</td>
+        <td class="mono">{{ d.item_count if d.item_count is not none else '' }}</td><td class="mono small">{{ d.attempts }}</td>
+        <td class="small nowrap">{{ d.sent_at|dt }}</td><td class="err-text">{{ d.error or '' }}</td></tr>
+    {% else %}<tr><td colspan="6" class="muted">None yet.</td></tr>{% endfor %}</tbody>
+  </table>
+</section>
+{% endblock %}

@@ -1,0 +1,47 @@
+# Sentinel Codex stack. Copied as-is by playbook 04 to
+# /home/<user>/sentinel-codex/ and started from there; ${VAR} comes from
+# the .env next to it (ansible/templates/env.j2).
+#
+# Joins Cyber Sentinel's network as external: postgres_db and nginx-proxy
+# live there. IPs 10.10.10.20-29 are used by Codex — keep them free in
+# Cyber Sentinel.
+
+name: sentinel-codex
+
+services:
+
+  # [SVC.NEWS.UI] codex-news-ui — News Radar config page (module news)
+  # No published port (nginx-proxy only), own least-privilege DB role.
+  codex-news-ui:
+    build:
+      context: ./news_ui
+      dockerfile: Dockerfile
+    image: sentinel-codex/news-ui:local
+    container_name: codex-news-ui
+    networks:
+      platform:
+        ipv4_address: 10.10.10.20
+    dns: 10.10.10.4
+    environment:
+      NEWS_UI_DB_HOST: postgres_db
+      NEWS_UI_DB_PORT: "5432"
+      NEWS_UI_DB_NAME: knowledge_hub
+      NEWS_UI_DB_USER: ${NEWS_UI_DB_USER}
+      NEWS_UI_DB_PASSWORD: ${NEWS_UI_DB_PASSWORD}
+      NEWS_UI_SECRET_KEY: ${NEWS_UI_SECRET_KEY}
+      NEWS_UI_USERS: ${NEWS_UI_USERS}
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 128m
+    cpus: 0.25
+    restart: unless-stopped
+
+networks:
+  platform:
+    external: true
+    name: cyber-sentinel_internal_network

@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}Prompt {{ row.version }}{% endblock %}
+{% block content %}
+<div class="head-row">
+  <h1>Prompt <span class="mono">{{ row.version }}</span>
+    {% if row.is_active %}<span class="tag ok">ACTIVE</span>{% else %}<span class="tag">draft</span>{% endif %}</h1>
+  <a class="btn ghost" href="{{ url_for('prompt_new', **{'from': row.version}) }}">Copy to new version</a>
+</div>
+
+{% if report.missing %}<div class="flash warn">Missing {{ report.missing|join(', ') }} — the workflow puts the news there. This version cannot be activated.</div>{% endif %}
+{% if report.unknown %}<div class="flash warn">Unknown placeholders (the workflow will not replace them): {% for p in report.unknown %}[[{{ p }}]] {% endfor %}</div>{% endif %}
+
+<form method="post" class="card">
+  <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+  <input type="hidden" name="fingerprint" value="{{ fingerprint }}">
+  <label>Note<input name="notes" value="{{ row.notes or '' }}" maxlength="500"></label>
+  <label>Text
+    {% if row.is_active %}<span class="muted small"> — read-only, the workflow is using this version. Copy it to make changes.</span>{% endif %}
+    <textarea name="system_prompt" class="prompt" spellcheck="false" data-counter {{ 'readonly' if row.is_active }}>{{ row.system_prompt }}</textarea>
+  </label>
+  <div class="counter muted small"></div>
+  <div class="help-box small">
+    <code>[[ITEMS_JSON]]</code> is replaced by the batch of news (id, source, title, summary, published_at, matched_keywords).
+    The answer format is fixed by the workflow (JSON array of <code>id</code>, <code>score</code> 1–5, <code>summary_pl</code>, <code>reason</code>) — describe what the score means, not the format.
+  </div>
+  <div class="actions">
+    <button class="btn primary" type="submit">{{ 'Save note' if row.is_active else 'Save draft' }}</button>
+    <a class="btn ghost" href="{{ url_for('prompts_page') }}">← All versions</a>
+  </div>
+</form>
+
+{% if not row.is_active %}
+<form method="post" action="{{ url_for('prompt_activate', version=row.version) }}" class="inline-right" data-confirm="Activate version {{ row.version }}? Unsaved edits will be lost.">
+  <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+  <button class="btn primary" type="submit">Activate this version (saved text)</button>
+</form>
+{% endif %}
+
+{% if diff %}
+<section class="card">
+  <h2>Changes against the active version</h2>
+  <pre class="diff">{% for kind, line in diff %}<span class="d-{{ kind }}">{{ line }}</span>
+{% endfor %}</pre>
+</section>
+{% endif %}
+{% endblock %}

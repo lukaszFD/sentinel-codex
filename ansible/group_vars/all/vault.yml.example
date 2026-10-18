@@ -1,0 +1,42 @@
+# Copy to vault.yml, fill in, then: ansible-vault encrypt vault.yml
+# Put the vault password in ansible/.vault_pass (git-ignored).
+#
+# dev and prod run separate Vault instances: vault_root_token, if it
+# differs per host, goes to host_vars/<host>/vault.yml instead.
+
+ansible_become_password: ""
+
+# ---- HashiCorp Vault (same instance as Cyber Sentinel) --------------------
+# Root token of Cyber Sentinel's Vault — used by Ansible only (playbook 02),
+# never by n8n. n8n gets its own read-only token, rotated on every deploy.
+vault_root_token: ""
+
+# ---- Gemini ---------------------------------------------------------------
+# Key from a SEPARATE Google AI Studio project: limits are per project, a
+# second key in Cyber Sentinel's project would share its quota.
+vault_codex_gemini_api_key: ""
+
+# ---- Gmail (same account and app password as Cyber Sentinel) ---------------
+vault_n8n_user: ""          # sender, e.g. you@gmail.com
+vault_n8n_gmail: ""         # Gmail app password
+vault_n8n_alert_to: ""      # digest recipient; empty = sender
+
+# ---- Postgres roles of module news ---------------------------------------
+# [A-Za-z0-9_-] only, >= 20 chars: openssl rand -hex 24
+vault_news_n8n_db_password: ""
+vault_news_editor_db_password: ""
+
+# ---- Config page ----------------------------------------------------------
+# Session key: openssl rand -hex 32
+# Password: >= 12 chars, plain or a werkzeug hash (pbkdf2:/scrypt:).
+vault_news_ui_secret_key: ""
+vault_news_ui_users:
+  lukasz: ""
+
+# TLS for codex-news.<suffix> (PEM).
+vault_codex_news_cert: |
+  -----BEGIN CERTIFICATE-----
+  -----END CERTIFICATE-----
+vault_codex_news_key: |
+  -----BEGIN PRIVATE KEY-----
+  -----END PRIVATE KEY-----

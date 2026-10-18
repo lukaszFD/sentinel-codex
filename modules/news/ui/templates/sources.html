@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% from "_source_form.html" import source_fields %}
+{% block title %}Sources{% endblock %}
+{% block content %}
+<h1>Sources</h1>
+<div class="help-box">
+  <ul>
+    <li><strong>Google News search</strong> — catches a story from any outlet, usually first. The query uses Google syntax: <code>OR</code>, <code>"exact phrase"</code>, <code>-word</code>. Only the last 24 hours are requested.</li>
+    <li><strong>Hacker News search</strong> — stories matching the query from the last 24 hours.</li>
+    <li><strong>RSS / Atom feed</strong> — a site's own feed, e.g. a vendor blog.</li>
+    <li><strong>CISA KEV</strong> — vulnerabilities exploited in the wild, added today or yesterday.</li>
+  </ul>
+  <strong>Bonus</strong> is added to the keyword score of every item from the source — trusted primary sources get a few points, noisy ones can get a negative bonus. Disable a source instead of deleting it if you are unsure.
+</div>
+
+<form method="post" class="card form-row">
+  <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+  <input type="hidden" name="action" value="add">
+  {{ source_fields() }}
+  <button class="btn primary" type="submit">Add</button>
+</form>
+
+<section class="card">
+<table class="list">
+  <thead><tr><th>Source</th><th>Topic</th><th>Every</th><th>Bonus</th><th>Last check</th><th>7 days</th><th></th></tr></thead>
+  <tbody>
+  {% for r in rows %}
+  <tr class="{{ 'row-off' if not r.is_active }}">
+    <td><a href="{{ url_for('source_edit', source_id=r.id) }}">{{ r.name }}</a>
+      <div class="muted small mono">{{ SOURCE_TYPES[r.source_type] }} · {{ r.query or r.endpoint }}</div>
+      {% if r.note %}<div class="muted small">{{ r.note }}</div>{% endif %}</td>
+    <td>{{ TOPICS[r.topic] }}{% if r.lang != 'en' %} <span class="tag">{{ r.lang }}</span>{% endif %}</td>
+    <td class="mono small nowrap">{{ r.poll_minutes }} min</td>
+    <td class="mono small">{{ '%+d'|format(r.base_score) if r.base_score else '0' }}</td>
+    <td class="small">
+      {% if not r.last_polled_at %}<span class="muted">not yet</span>
+      {% elif r.last_status == 'ok' %}<span class="tag ok">ok</span> <span class="muted">{{ r.last_item_count }} in feed</span>
+      {% else %}<span class="tag bad">error ×{{ r.error_streak }}</span><div class="err-text">{{ r.last_error }}</div>{% endif %}
+      <div class="muted nowrap">{{ r.last_polled_at|dt }}</div>
+    </td>
+    <td class="small nowrap">{{ r.items_7d }} new<br><span class="muted">{{ r.sent_7d }} sent</span></td>
+    <td class="row-actions">
+      <form method="post">
+        <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+        <input type="hidden" name="action" value="toggle"><input type="hidden" name="id" value="{{ r.id }}">
+        <button class="btn small ghost" type="submit">{{ 'Disable' if r.is_active else 'Enable' }}</button>
+      </form>
+      <form method="post" data-confirm="Delete source {{ r.name }}? Items it collected stay.">
+        <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+        <input type="hidden" name="action" value="delete"><input type="hidden" name="id" value="{{ r.id }}">
+        <button class="btn small danger" type="submit">Delete</button>
+      </form>
+    </td>
+  </tr>
+  {% else %}<tr><td colspan="7" class="muted">No sources.</td></tr>{% endfor %}
+  </tbody>
+</table>
+</section>
+{% endblock %}

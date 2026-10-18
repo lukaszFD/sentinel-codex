@@ -1,0 +1,23 @@
+# IDE - IntelliJ IDEA
+.idea/
+*.iws
+*.iml
+.run/
+
+# Ansible secrets (same rule as Cyber Sentinel)
+/ansible/.vault_pass
+/ansible/group_vars/all/vault.yml
+*.retry
+
+# Local env / logs
+.env
+*.log
+
+# Python
+venv/
+.venv/
+__pycache__/
+*.pyc
+
+# Node (only if you test the n8n Code-node sources locally)
+node_modules/

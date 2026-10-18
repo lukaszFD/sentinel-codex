@@ -1,0 +1,158 @@
+---
+# ============================================================
+# Sentinel Codex — Playbook 04 — Config pages (compose stack)
+# ============================================================
+# Purpose:    1. stages docker-compose-sentinel-codex.yml, build contexts
+#                and .env in {{ codex_deploy_dir }}
+#             2. builds and starts the stack (own compose project
+#                "sentinel-codex", joins Cyber Sentinel's network)
+#             3. adds the vhost codex-news.<suffix> to Cyber Sentinel's
+#                nginx-proxy and reloads it
+#
+# Depends on: - 01 (database + roles)
+#             - Cyber Sentinel: network cyber-sentinel_internal_network,
+#               container nginx-proxy, its conf.d/certs directories
+#             - vault: vault_news_editor_db_password, vault_news_ui_secret_key,
+#               vault_news_ui_users, vault_codex_news_cert, vault_codex_news_key
+#
+# Touches Cyber Sentinel only by adding files named codex_* to
+# {{ platform_nginx_dir }}/conf.d and /certs. Its playbook 05 does not
+# delete them; after wiping that directory, re-run this playbook.
+# ============================================================
+
+- name: 04 - Config pages
+  hosts: all_servers
+  become: yes
+
+  vars:
+    compose_file: "docker-compose-sentinel-codex.yml"
+
+  tasks:
+    # ============================================================
+    # SECTION 0 — Pre-flight
+    # ============================================================
+
+    # Items carry only the check name and a boolean, never a secret value,
+    # so the failing variable can be named without no_log.
+    - name: "[04.0.1] Assert config page secrets"
+      ansible.builtin.assert:
+        that: item.ok | bool
+        fail_msg: "{{ item.name }} — see vault.yml.example."
+        quiet: true
+      loop:
+        - { name: "vault_news_ui_secret_key: >= 32 chars (openssl rand -hex 32)",
+            ok: "{{ vault_news_ui_secret_key | default('') | length >= 32 }}" }
+        - { name: "vault_news_ui_users: mapping with at least one user",
+            ok: "{{ vault_news_ui_users | default({}) is mapping and vault_news_ui_users | default({}) | length > 0 }}" }
+        - { name: "vault_news_ui_users: every password >= 12 chars",
+            ok: "{{ vault_news_ui_users | default({}) is mapping and (vault_news_ui_users | default({}) | dict2items | map(attribute='value') | map('string') | map('length') | min | default(0)) >= 12 }}" }
+        - { name: "vault_news_editor_db_password: >= 20 chars",
+            ok: "{{ vault_news_editor_db_password | default('') | length >= 20 }}" }
+        - { name: "vault_codex_news_cert: PEM certificate (BEGIN CERTIFICATE)",
+            ok: "{{ vault_codex_news_cert | default('') is search('BEGIN CERTIFICATE') }}" }
+        - { name: "vault_codex_news_key: PEM private key (PRIVATE KEY)",
+            ok: "{{ vault_codex_news_key | default('') is search('PRIVATE KEY') }}" }
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: "[04.0.2] Verify Cyber Sentinel network and nginx-proxy"
+      ansible.builtin.shell:
+        cmd: >-
+          docker network inspect {{ platform_network }} > /dev/null &&
+          test "$(docker inspect -f '{{ '{{' }}.State.Running{{ '}}' }}' {{ platform_nginx_container }})" = true &&
+          test -d {{ platform_nginx_dir }}/conf.d && test -d {{ platform_nginx_dir }}/certs
+      changed_when: false
+
+    # ============================================================
+    # SECTION 1 — Stage
+    # ============================================================
+
+    - name: "[04.1.1] Create deployment directory"
+      ansible.builtin.file:
+        path: "{{ codex_deploy_dir }}"
+        state: directory
+        owner: "{{ deployment_user }}"
+        group: "{{ deployment_user }}"
+        mode: '0750'
+
+    - name: "[04.1.2] Stage news config page build context"
+      ansible.builtin.copy:
+        src: "{{ codex_repo_dir }}/modules/news/ui/"
+        dest: "{{ codex_deploy_dir }}/news_ui/"
+        owner: "{{ deployment_user }}"
+        group: "{{ deployment_user }}"
+        mode: '0644'
+        directory_mode: '0755'
+
+    - name: "[04.1.3] Stage compose file"
+      ansible.builtin.copy:
+        src: "{{ codex_repo_dir }}/docker/{{ compose_file }}"
+        dest: "{{ codex_deploy_dir }}/{{ compose_file }}"
+        owner: "{{ deployment_user }}"
+        group: "{{ deployment_user }}"
+        mode: '0644'
+
+    - name: "[04.1.4] Render .env"
+      ansible.builtin.template:
+        src: templates/env.j2
+        dest: "{{ codex_deploy_dir }}/.env"
+        owner: "{{ deployment_user }}"
+        group: "{{ deployment_user }}"
+        mode: '0600'
+      no_log: true
+
+    # ============================================================
+    # SECTION 2 — Build and start
+    # ============================================================
+
+    - name: "[04.2.1] Build and start the sentinel-codex stack"
+      ansible.builtin.command:
+        cmd: "docker compose -f {{ compose_file }} up -d --build"
+        chdir: "{{ codex_deploy_dir }}"
+      register: codex_up
+      changed_when: "'Started' in codex_up.stderr or 'Recreated' in codex_up.stderr or 'Created' in codex_up.stderr"
+
+    - name: "[04.2.2] Wait for codex-news-ui to reach knowledge_hub"
+      ansible.builtin.command:
+        cmd: >-
+          docker exec {{ news_ui_vhost.internal_host }} python -c
+          "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/healthz?deep=1', timeout=5).status == 200 else 1)"
+      register: codex_news_health
+      until: codex_news_health.rc == 0
+      retries: 12
+      delay: 5
+      changed_when: false
+
+    # ============================================================
+    # SECTION 3 — nginx vhost on Cyber Sentinel's nginx-proxy
+    # ============================================================
+
+    - name: "[04.3.1] Save TLS certificate and key"
+      ansible.builtin.copy:
+        content: "{{ item.content }}"
+        dest: "{{ platform_nginx_dir }}/certs/{{ news_ui_vhost.name }}.{{ item.ext }}"
+        owner: "{{ deployment_user }}"
+        mode: '0600'
+      loop:
+        - { ext: "crt", content: "{{ vault_codex_news_cert }}" }
+        - { ext: "key", content: "{{ vault_codex_news_key }}" }
+      no_log: true
+      register: codex_tls
+
+    - name: "[04.3.2] Render nginx server block"
+      ansible.builtin.template:
+        src: templates/nginx_vhost.conf.j2
+        dest: "{{ platform_nginx_dir }}/conf.d/{{ item.name }}.conf"
+        owner: "{{ deployment_user }}"
+        mode: '0644'
+      loop: ["{{ news_ui_vhost }}"]
+      register: codex_vhost
+
+    - name: "[04.3.3] Test and reload nginx-proxy"
+      ansible.builtin.shell:
+        cmd: "docker exec {{ platform_nginx_container }} nginx -t && docker exec {{ platform_nginx_container }} nginx -s reload"
+      when: codex_tls.changed or codex_vhost.changed
+
+    - name: "[04.3.4] Summary"
+      ansible.builtin.debug:
+        msg: "News Radar config page: https://{{ news_ui_vhost.hostname }}.{{ domain_suffix }} (add the name to Pi-hole local DNS)"

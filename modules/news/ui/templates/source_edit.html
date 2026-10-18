@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% from "_source_form.html" import source_fields %}
+{% from "_macros.html" import status_tag, score %}
+{% block title %}{{ row.name }}{% endblock %}
+{% block content %}
+<h1>{{ row.name }} {% if not row.is_active %}<span class="tag">disabled</span>{% endif %}</h1>
+
+<form method="post" class="card form-row">
+  <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+  {{ source_fields(row) }}
+  <button class="btn primary" type="submit">Save</button>
+  <a class="btn ghost" href="{{ url_for('sources_page') }}">Cancel</a>
+</form>
+
+<section class="card">
+  <h2>Health</h2>
+  {% if state %}
+  <table class="kv">
+    <tr><th>Last check</th><td>{{ state.last_polled_at|dt }}</td></tr>
+    <tr><th>Result</th><td>{% if state.last_status == 'ok' %}<span class="tag ok">ok</span> · {{ state.last_item_count }} entries in the feed{% else %}<span class="tag bad">error ×{{ state.error_streak }}</span>{% endif %}</td></tr>
+    {% if state.last_error %}<tr><th>Error</th><td class="err-text">{{ state.last_error }}</td></tr>{% endif %}
+  </table>
+  {% else %}<p class="muted">Not fetched yet.</p>{% endif %}
+</section>
+
+<section class="card">
+  <h2>Latest items from this source</h2>
+  <table class="list compact">
+    <thead><tr><th>AI</th><th>Kw</th><th>Title</th><th>Status</th><th>Seen</th></tr></thead>
+    <tbody>{% for i in recent %}
+      <tr><td>{{ score(i.ai_score) }}</td><td class="mono small">{{ i.keyword_score }}</td>
+        <td><a href="{{ i.url }}" target="_blank" rel="noopener noreferrer">{{ i.title }}</a></td>
+        <td>{{ status_tag(i.status) }}</td><td class="small nowrap">{{ i.fetched_at|dt }}</td></tr>
+    {% else %}<tr><td colspan="5" class="muted">Nothing yet.</td></tr>{% endfor %}</tbody>
+  </table>
+</section>
+{% endblock %}

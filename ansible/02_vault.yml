@@ -1,0 +1,199 @@
+---
+# ============================================================
+# Sentinel Codex — Playbook 02 — HashiCorp Vault
+# ============================================================
+# Purpose:    Same pattern as Cyber Sentinel 06.1, in Codex's own space of
+#             the same Vault instance:
+#               1. writes Codex secrets to secret/sentinel-codex/*
+#               2. creates the read-only policy sentinel-codex-n8n
+#               3. rotates the n8n token for that policy: mints a new one,
+#                  revokes every older Codex token
+#
+#
+# Depends on: - Cyber Sentinel 06.1 (Vault initialized, unsealed, KV v2
+#               at secret/, token auth max TTL raised to 8760h)
+#             - vault: vault_root_token (Ansible only), Gemini key, Gmail,
+#               module DB passwords — see vault.yml.example
+#
+# Token for n8n — nothing to store in ansible-vault:
+#   every run mints a fresh read-only token and revokes the old ones,
+#   found by policy via the root token. Playbook 03 puts the new token
+#   into the n8n credential "Codex Vault", so 02 and 03 always run
+#   together (00_main.yml, or: ansible-playbook 02_vault.yml 03_n8n.yml).
+#   The token is periodic (codex_vault_token_period, 1 year): deploy at
+#   least once in that period or n8n loses access to Vault.
+#
+# Vault layout (KV v2, mount secret/):
+#   sentinel-codex/api-keys/gemini                {token}            n8n reads
+#   sentinel-codex/credentials/gmail              {user,password,to} n8n reads
+#   sentinel-codex/credentials/postgres/news_n8n    {user,password}  reference only
+#   sentinel-codex/credentials/postgres/news_editor {user,password}  reference only
+# n8n uses the Postgres and SMTP passwords through n8n credentials
+# (playbook 03) — those nodes cannot read Vault at run time. Vault is the
+# reference copy; both are written from the same ansible-vault values.
+# ============================================================
+
+- name: 02 - HashiCorp Vault (secrets, policy, n8n token)
+  hosts: all_servers
+  become: yes
+
+  vars:
+    vault_api: "{{ platform_vault_url }}/v1"
+    kv: "{{ platform_vault_url }}/v1/secret/data/{{ codex_vault_prefix }}"
+
+  tasks:
+    # ============================================================
+    # SECTION 0 — Pre-flight
+    # ============================================================
+
+    - name: "[02.0.1] Assert required secrets are defined"
+      ansible.builtin.assert:
+        that:
+          - lookup('vars', item, default='') | string | length > 0
+        fail_msg: "'{{ item }}' is missing or empty — see vault.yml.example."
+        quiet: true
+      loop:
+        - vault_root_token
+        - vault_codex_gemini_api_key
+        - vault_n8n_user
+        - vault_n8n_gmail
+        - vault_news_n8n_db_password
+        - vault_news_editor_db_password
+      no_log: true
+
+    # 200 = initialized, unsealed, active. Unsealing is Cyber Sentinel's job.
+    - name: "[02.0.2] Verify Vault is unsealed"
+      ansible.builtin.uri:
+        url: "{{ vault_api }}/sys/health"
+        status_code: [200, 429, 501, 503]
+      register: codex_vault_health
+      failed_when: codex_vault_health.status != 200
+
+    - name: "[02.0.3] Verify the root token works"
+      ansible.builtin.uri:
+        url: "{{ vault_api }}/auth/token/lookup-self"
+        headers: { X-Vault-Token: "{{ vault_root_token | trim }}" }
+        status_code: [200]
+      no_log: true
+
+    # ============================================================
+    # SECTION 1 — Secrets
+    # ============================================================
+
+    - name: "[02.1.1] Write API keys"
+      ansible.builtin.uri:
+        url: "{{ kv }}/api-keys/{{ item.path }}"
+        method: POST
+        headers: { X-Vault-Token: "{{ vault_root_token | trim }}" }
+        body: { data: { token: "{{ item.value }}" } }
+        body_format: json
+        status_code: [200, 204]
+      loop:
+        - { path: "gemini", value: "{{ vault_codex_gemini_api_key }}" }
+      no_log: true
+
+    - name: "[02.1.2] Write credentials"
+      ansible.builtin.uri:
+        url: "{{ kv }}/credentials/{{ item.path }}"
+        method: POST
+        headers: { X-Vault-Token: "{{ vault_root_token | trim }}" }
+        body:
+          data: "{{ {'user': item.user, 'password': item.value} | combine(item.extra | default({})) }}"
+        body_format: json
+        status_code: [200, 204]
+      loop:
+        - { path: "gmail", user: "{{ vault_n8n_user }}", value: "{{ vault_n8n_gmail }}",
+            extra: { to: "{{ vault_n8n_alert_to | default('', true) | default(vault_n8n_user, true) }}" } }
+        - { path: "postgres/news_n8n",    user: "{{ news_n8n_db_user }}",    value: "{{ vault_news_n8n_db_password }}" }
+        - { path: "postgres/news_editor", user: "{{ news_editor_db_user }}", value: "{{ vault_news_editor_db_password }}" }
+      no_log: true
+
+    # ============================================================
+    # SECTION 2 — Read-only policy for n8n
+    # ============================================================
+    # Only what the workflows read at run time. Keep in sync with the
+    # secretPath values of the HashiCorp Vault nodes in modules/*/n8n.
+
+    - name: "[02.2.1] Create/update policy {{ codex_vault_policy }}"
+      ansible.builtin.uri:
+        url: "{{ vault_api }}/sys/policies/acl/{{ codex_vault_policy }}"
+        method: PUT
+        headers: { X-Vault-Token: "{{ vault_root_token | trim }}" }
+        body_format: json
+        body:
+          policy: |
+            path "secret/data/{{ codex_vault_prefix }}/api-keys/*" {
+              capabilities = ["read"]
+            }
+
+            path "secret/data/{{ codex_vault_prefix }}/credentials/gmail" {
+              capabilities = ["read"]
+            }
+        status_code: [200, 204]
+      no_log: true
+
+    # ============================================================
+    # SECTION 3 — n8n token (rotated on every run)
+    # ============================================================
+    # New token first, old ones revoked after — n8n keeps working with the
+    # old token until playbook 03 swaps the credential (seconds).
+
+    - name: "[02.3.1] Mint orphan, periodic, read-only token for n8n"
+      ansible.builtin.uri:
+        url: "{{ vault_api }}/auth/token/create-orphan"
+        method: POST
+        headers: { X-Vault-Token: "{{ vault_root_token | trim }}" }
+        body_format: json
+        body:
+          policies: ["{{ codex_vault_policy }}"]
+          period: "{{ codex_vault_token_period }}"
+          renewable: true
+          no_default_policy: true
+          display_name: "{{ codex_vault_policy }}"
+        status_code: [200]
+      register: codex_token_create
+      no_log: true
+
+    - name: "[02.3.2] List token accessors"
+      ansible.builtin.uri:
+        url: "{{ vault_api }}/auth/token/accessors?list=true"
+        headers: { X-Vault-Token: "{{ vault_root_token | trim }}" }
+        status_code: [200]
+      register: codex_accessors
+      no_log: true
+
+    - name: "[02.3.3] Look up each token"
+      ansible.builtin.uri:
+        url: "{{ vault_api }}/auth/token/lookup-accessor"
+        method: POST
+        headers: { X-Vault-Token: "{{ vault_root_token | trim }}" }
+        body_format: json
+        body: { accessor: "{{ item }}" }
+        status_code: [200, 400, 403]
+      loop: "{{ codex_accessors.json.data['keys'] | difference([codex_token_create.json.auth.accessor]) }}"
+      register: codex_token_lookups
+      no_log: true
+
+    # Only tokens carrying exactly Codex's policy — Cyber Sentinel's tokens
+    # (n8n-readonly, root) are never touched.
+    - name: "[02.3.4] Revoke older Codex tokens"
+      ansible.builtin.uri:
+        url: "{{ vault_api }}/auth/token/revoke-accessor"
+        method: POST
+        headers: { X-Vault-Token: "{{ vault_root_token | trim }}" }
+        body_format: json
+        body: { accessor: "{{ item.item }}" }
+        status_code: [200, 204]
+      loop: >-
+        {{ codex_token_lookups.results
+           | selectattr('status', 'equalto', 200)
+           | selectattr('json.data.policies', 'equalto', [codex_vault_policy])
+           | list }}
+      loop_control:
+        label: "{{ item.item }}"
+      no_log: true
+
+    - name: "[02.3.5] Token for playbook 03"
+      ansible.builtin.set_fact:
+        codex_n8n_vault_token_effective: "{{ codex_token_create.json.auth.client_token }}"
+      no_log: true

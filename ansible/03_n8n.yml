@@ -1,0 +1,156 @@
+---
+# ============================================================
+# Sentinel Codex — Playbook 03 — n8n credentials + workflows
+# ============================================================
+# Purpose:    1. imports Codex's own credentials into Cyber Sentinel's
+#                n8n, with fixed ids (upsert — re-runs refresh secrets):
+#                  "Codex Vault"           token from playbook 02
+#                  "Codex SMTP"            Gmail account + app password
+#                  "Codex news (Postgres)" role news_n8n on knowledge_hub
+#             2. imports the News Radar workflow once; if a workflow with
+#                that id exists it is left alone, so edits made in n8n are
+#                never overwritten. Imported inactive — activate in n8n.
+#
+#             No Cyber Sentinel credential is used. The Gemini key is read
+#             by the workflow from Vault (sentinel-codex/api-keys/gemini).
+#
+# Depends on: - 01 (database + roles)
+#             - 02 in the SAME run: it mints the Vault token this playbook
+#               puts into "Codex Vault" (00_main.yml, or
+#               ansible-playbook 02_vault.yml 03_n8n.yml)
+# ============================================================
+
+- name: 03 - n8n credentials and workflows
+  hosts: all_servers
+  become: yes
+
+  vars:
+    n8n: "{{ platform_n8n_container }}"
+    # Minted by playbook 02 in this run.
+    codex_vault_token: "{{ codex_n8n_vault_token_effective | default('') }}"
+    codex_credentials:
+      - id: "{{ codex_vault_credential_id }}"
+        name: "{{ codex_vault_credential_name }}"
+        type: "hashiCorpVaultApi"
+        data:
+          url: "{{ platform_vault_internal_url }}"
+          authMethod: "token"
+          token: "{{ codex_vault_token }}"
+      - id: "{{ codex_smtp_credential_id }}"
+        name: "{{ codex_smtp_credential_name }}"
+        type: "smtp"
+        data:
+          user: "{{ vault_n8n_user }}"
+          password: "{{ vault_n8n_gmail }}"
+          host: "smtp.gmail.com"
+          port: 465
+          secure: true
+      - id: "{{ news_n8n_credential_id }}"
+        name: "{{ news_n8n_credential_name }}"
+        type: "postgres"
+        data:
+          host: "{{ platform_postgres_container }}"
+          port: 5432
+          database: "{{ codex_db_name }}"
+          user: "{{ news_n8n_db_user }}"
+          password: "{{ vault_news_n8n_db_password }}"
+          ssl: "disable"
+
+  tasks:
+    - name: "[03.0.1] Assert credential secrets are available"
+      ansible.builtin.assert:
+        that:
+          - codex_vault_token | length > 0
+          - vault_n8n_user | default('') | length > 0
+          - vault_n8n_gmail | default('') | length > 0
+          - vault_news_n8n_db_password | default('') | length > 0
+        fail_msg: >-
+          Missing secret. The Vault token comes from playbook 02 — run both
+          together: ansible-playbook 02_vault.yml 03_n8n.yml (or 00_main.yml).
+        quiet: true
+      no_log: true
+
+    - name: "[03.0.2] Verify Cyber Sentinel n8n is running"
+      ansible.builtin.command:
+        cmd: "docker inspect -f '{{ '{{' }}.State.Running{{ '}}' }}' {{ n8n }}"
+      register: codex_n8n_running
+      changed_when: false
+      failed_when: codex_n8n_running.rc != 0 or codex_n8n_running.stdout | trim != 'true'
+
+    # ============================================================
+    # SECTION 1 — Credentials (same pattern as Cyber Sentinel 06.2)
+    # ============================================================
+
+    - name: "[03.1.X] Import Codex credentials"
+      block:
+        - name: "[03.1.1] Stage credentials file on host (plaintext secrets)"
+          ansible.builtin.copy:
+            content: "{{ codex_credentials | to_json }}"
+            dest: "/tmp/codex_credentials.json"
+            mode: '0600'
+          no_log: true
+
+        - name: "[03.1.2] Copy credentials file into n8n container"
+          ansible.builtin.shell:
+            cmd: >-
+              docker exec -i -u node {{ n8n }}
+              sh -c 'umask 077 && cat > /tmp/codex_credentials.json'
+              < /tmp/codex_credentials.json
+          no_log: true
+
+        - name: "[03.1.3] Import credentials via n8n CLI"
+          ansible.builtin.command:
+            cmd: "docker exec -u node {{ n8n }} n8n import:credentials --input=/tmp/codex_credentials.json"
+          register: codex_cred_import
+          changed_when: "'Successfully imported' in codex_cred_import.stdout"
+          no_log: true
+
+      always:
+        - name: "[03.1.4] Remove plaintext credentials file (host + container)"
+          ansible.builtin.shell:
+            cmd: >-
+              rm -f /tmp/codex_credentials.json;
+              docker exec -u root {{ n8n }} rm -f /tmp/codex_credentials.json
+          changed_when: false
+
+    # ============================================================
+    # SECTION 2 — Workflow (imported once)
+    # ============================================================
+
+    - name: "[03.2.1] Check whether News Radar is already in n8n"
+      ansible.builtin.command:
+        cmd: "docker exec -u node {{ n8n }} n8n export:workflow --id={{ news_workflow_id }} --output=/tmp/codex_wf_exists.json"
+      register: codex_wf_exists
+      changed_when: false
+      failed_when: false
+
+    - name: "[03.2.X] Import News Radar"
+      when: codex_wf_exists.rc != 0
+      block:
+        - name: "[03.2.2] Stage workflow JSON on the server"
+          ansible.builtin.copy:
+            src: "{{ codex_repo_dir }}/modules/news/n8n/{{ news_workflow_file }}"
+            dest: "/tmp/codex_news_radar.json"
+            mode: '0644'
+
+        - name: "[03.2.3] Copy workflow JSON into n8n container"
+          ansible.builtin.command:
+            cmd: "docker cp /tmp/codex_news_radar.json {{ n8n }}:/tmp/codex_news_radar.json"
+
+        - name: "[03.2.4] Import workflow via n8n CLI"
+          ansible.builtin.command:
+            cmd: "docker exec -u node {{ n8n }} n8n import:workflow --input=/tmp/codex_news_radar.json"
+          register: codex_wf_import
+          failed_when: codex_wf_import.rc != 0 or 'Successfully imported' not in (codex_wf_import.stdout + codex_wf_import.stderr)
+
+      always:
+        - name: "[03.2.5] Remove staged workflow JSON"
+          ansible.builtin.shell:
+            cmd: >-
+              rm -f /tmp/codex_news_radar.json;
+              docker exec -u root {{ n8n }} rm -f /tmp/codex_news_radar.json /tmp/codex_wf_exists.json
+          changed_when: false
+
+    - name: "[03.2.6] Summary"
+      ansible.builtin.debug:
+        msg: "News Radar workflow: {{ 'imported now' if codex_wf_exists.rc != 0 else 'already in n8n, left unchanged' }} — activate it in n8n."

@@ -1,0 +1,15 @@
+---
+# ============================================================
+# Sentinel Codex — full deployment
+# ============================================================
+#   cd ansible && ansible-playbook 00_main.yml --limit vm-prox-dev
+#
+# Requires Cyber Sentinel already deployed on the same host
+# (see group_vars/all/codex.yml, [VARS.PLATFORM]). 03 always runs in the
+# same run as 02 — it uses the Vault token 02 has just minted.
+# ============================================================
+
+- import_playbook: 01_database.yml   # [00.1] knowledge_hub + module schemas and roles
+- import_playbook: 02_vault.yml      # [00.2] Vault secrets, read-only policy, n8n token
+- import_playbook: 03_n8n.yml        # [00.3] n8n credentials + News Radar workflow
+- import_playbook: 04_ui.yml         # [00.4] config pages + nginx vhost

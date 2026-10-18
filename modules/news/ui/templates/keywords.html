@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block title %}Keywords{% endblock %}
+{% block content %}
+<h1>Keywords</h1>
+<div class="help-box">
+  Every new item gets the sum of the weights of the keywords found in its title and summary, plus the source bonus.
+  Items below <a href="{{ url_for('settings_page') }}#stage-2">{{ setting_label('keyword_min_score') }}</a>
+  (now <strong>{{ threshold|num }}</strong>) are dropped without asking the AI.
+  <ul>
+    <li>Matching ignores case and works on whole words: <code>cve</code> does not match "curve".</li>
+    <li>A <code>*</code> at the end matches the beginning of a word: <code>self-replicat*</code> finds "self-replication" and "self-replicating".</li>
+    <li>Negative weights push noise down: <code>webinar*</code> −4.</li>
+    <li>Your own stack (n8n, Vault, Pi-hole…) deserves a high weight — a vulnerability there matters most.</li>
+  </ul>
+</div>
+
+<form method="get" class="card form-row">
+  <label class="grow">Test a headline<input name="test" value="{{ test_text }}" maxlength="2000" placeholder="Paste a title or summary"></label>
+  <button class="btn ghost" type="submit">Check</button>
+  {% if test %}
+    <div class="grow">
+      Score <strong class="mono">{{ test.score }}</strong> (without source bonus) —
+      {% if test.score >= threshold %}<span class="tag ok">goes to AI</span>{% else %}<span class="tag">filtered out</span>{% endif %}
+      <div class="small">{% for t in test.matched %}<span class="kw">{{ t }}</span>{% else %}<span class="muted">no keyword matched</span>{% endfor %}</div>
+    </div>
+  {% endif %}
+</form>
+
+<form method="post" class="card form-row">
+  <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+  <input type="hidden" name="action" value="add">
+  <label class="grow">Keyword or phrase<input name="term" required maxlength="80" placeholder="e.g. supply chain attack"></label>
+  <label>Weight<input class="num short" name="weight" type="number" min="-10" max="10" value="3" required></label>
+  <label>Topic<select name="topic">{% for k, v in TOPICS.items() %}<option value="{{ k }}">{{ v }}</option>{% endfor %}</select></label>
+  <label class="grow">Note<input name="note" maxlength="200"></label>
+  <button class="btn primary" type="submit">Add</button>
+</form>
+
+<section class="card">
+<table class="list">
+  <thead><tr><th>Keyword</th><th>Weight</th><th>Topic</th><th>Hits (7 days)</th><th>Note</th><th></th></tr></thead>
+  <tbody>
+  {% for r in rows %}
+  <tr class="{{ 'row-off' if not r.is_active }}">
+    <td class="mono">{{ r.term }}</td>
+    <td>
+      <form method="post" class="inline">
+        <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+        <input type="hidden" name="action" value="weight"><input type="hidden" name="id" value="{{ r.id }}">
+        <input class="num short {{ 'weight-pos' if r.weight > 0 else 'weight-neg' }}" name="weight" type="number" min="-10" max="10" value="{{ r.weight }}">
+        <button class="btn small ghost" type="submit">Save</button>
+      </form>
+    </td>
+    <td>{{ TOPICS[r.topic] }}</td>
+    <td class="mono small">{{ r.hits_7d }}</td>
+    <td class="small muted">{{ r.note or '' }}</td>
+    <td class="row-actions">
+      <form method="post">
+        <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+        <input type="hidden" name="action" value="toggle"><input type="hidden" name="id" value="{{ r.id }}">
+        <button class="btn small ghost" type="submit">{{ 'Disable' if r.is_active else 'Enable' }}</button>
+      </form>
+      <form method="post" data-confirm="Delete keyword '{{ r.term }}'?">
+        <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+        <input type="hidden" name="action" value="delete"><input type="hidden" name="id" value="{{ r.id }}">
+        <button class="btn small danger" type="submit">Delete</button>
+      </form>
+    </td>
+  </tr>
+  {% else %}<tr><td colspan="6" class="muted">No keywords.</td></tr>{% endfor %}
+  </tbody>
+</table>
+</section>
+{% endblock %}

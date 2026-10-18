@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% from "_macros.html" import score, digest_tag %}
+{% block title %}Overview{% endblock %}
+{% block content %}
+<h1>News Radar</h1>
+<p class="muted">AI and cyber news from the sources below are filtered by keywords, scored by Gemini and sent as an e-mail digest. Every change here applies from the next workflow run (every 15 minutes) — nothing has to be restarted.</p>
+
+{% if settings.get('enabled') == 0 %}<div class="flash warn">News Radar is switched off — no source is fetched. <a href="{{ url_for('settings_page') }}">Settings</a></div>{% endif %}
+{% if settings.get('ai_enabled') == 0 %}<div class="flash warn">AI scoring is off — the keyword score alone decides what is sent.</div>{% endif %}
+
+<div class="grid">
+  <section class="card">
+    <h2>Next digest</h2>
+    {% if next_at %}<p class="stat">{{ next_at.strftime('%H:%M') }}</p><p class="muted small">{{ next_at.strftime('%A %d.%m') }} · Europe/Warsaw</p>
+    {% else %}<p class="muted">No active digest time. <a href="{{ url_for('schedule_page') }}">Schedule</a></p>{% endif %}
+    <p class="small">Waiting for it: <strong>{{ counts.get('alert', 0) }}</strong> news</p>
+  </section>
+  <section class="card">
+    <h2>Last 24 hours</h2>
+    <table class="kv">
+      <tr><th>Collected</th><td>{{ counts.values()|sum }}</td></tr>
+      <tr><th>Sent / waiting</th><td>{{ counts.get('sent', 0) }} / {{ counts.get('alert', 0) }}</td></tr>
+      <tr><th>AI: below threshold</th><td>{{ counts.get('scored', 0) }}</td></tr>
+      <tr><th>AI: waiting / failed</th><td>{{ counts.get('pending_ai', 0) }} / {{ counts.get('ai_error', 0) }}</td></tr>
+      <tr><th>Dropped (keywords, duplicate, old)</th><td>{{ counts.get('filtered', 0) + counts.get('duplicate', 0) + counts.get('stale', 0) }}</td></tr>
+    </table>
+  </section>
+  <section class="card">
+    <h2>Sources</h2>
+    <p class="stat">{{ sources.active }}<span class="muted stat-sm"> / {{ sources.total }} active</span></p>
+    {% if failing %}<p class="small"><span class="tag bad">{{ failing|length }} failing</span></p>{% else %}<p class="small"><span class="tag ok">all OK</span></p>{% endif %}
+    {% if never %}<p class="muted small">{{ never }} not fetched yet</p>{% endif %}
+  </section>
+</div>
+
+{% if failing %}
+<section class="card">
+  <h2>Failing sources</h2>
+  <table class="list compact">
+    <thead><tr><th>Source</th><th>Failed in a row</th><th>Last try</th><th>Error</th></tr></thead>
+    <tbody>{% for f in failing %}
+      <tr><td><a href="{{ url_for('source_edit', source_id=f.id) }}">{{ f.name }}</a></td><td class="mono">{{ f.error_streak }}</td>
+        <td class="small nowrap">{{ f.last_polled_at|dt }}</td><td class="err-text">{{ f.last_error }}</td></tr>
+    {% endfor %}</tbody>
+  </table>
+</section>
+{% endif %}
+
+<section class="card">
+  <h2>In the next digest</h2>
+  {% if queued %}
+  <table class="list compact">
+    <tbody>{% for q in queued %}
+      <tr><td>{{ score(q.ai_score) }}</td>
+        <td><a class="item-title" href="{{ q.url }}" rel="noopener noreferrer" target="_blank">{{ q.title }}</a>
+          {% if q.ai_summary_pl %}<p class="item-summary muted">{{ q.ai_summary_pl }}</p>{% endif %}</td>
+        <td class="small muted nowrap">{{ q.source }}<br>{{ q.published_at|dt }}</td></tr>
+    {% endfor %}</tbody>
+  </table>
+  {% else %}<p class="muted">Nothing yet.</p>{% endif %}
+</section>
+
+<div class="grid">
+  <section class="card">
+    <h2>Recent digests</h2>
+    <table class="list compact">
+      <thead><tr><th>Slot</th><th>Status</th><th>News</th></tr></thead>
+      <tbody>{% for d in digests %}
+        <tr><td class="small nowrap">{{ d.slot_at|dt }}</td><td>{{ digest_tag(d.status) }}</td><td class="mono">{{ d.item_count if d.item_count is not none else '' }}</td></tr>
+      {% else %}<tr><td colspan="3" class="muted">None yet.</td></tr>{% endfor %}</tbody>
+    </table>
+  </section>
+  <section class="card">
+    <h2>Recent changes</h2>
+    <table class="list compact">
+      <tbody>{% for c in changes %}
+        <tr><td class="small nowrap">{{ c.changed_at|dt }}</td><td>{{ c.actor }}</td><td class="mono small">{{ c.table_name }}</td><td><span class="tag op-{{ c.operation|lower }}">{{ c.operation }}</span></td></tr>
+      {% else %}<tr><td class="muted">None yet.</td></tr>{% endfor %}</tbody>
+    </table>
+  </section>
+</div>
+{% endblock %}

@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% from "_macros.html" import status_tag, score %}
+{% block title %}Items{% endblock %}
+{% block content %}
+<h1>Collected news</h1>
+<p class="muted">Read-only. Shows why each item was or was not sent — useful when tuning keywords and thresholds. Latest 200.</p>
+
+<div class="status-bar">
+  <a class="btn small ghost {{ 'active' if not status }}" href="{{ url_for('items_page', q=q) }}">all · {{ counts.values()|sum }}</a>
+  {% for k, v in ITEM_STATUS.items() %}
+    <a class="btn small ghost {{ 'active' if status == k }}" href="{{ url_for('items_page', status=k, q=q) }}">{{ v[0] }} · {{ counts.get(k, 0) }}</a>
+  {% endfor %}
+</div>
+<form method="get" class="card form-row">
+  <input type="hidden" name="status" value="{{ status }}">
+  <label class="grow">Title contains<input name="q" value="{{ q }}" maxlength="100"></label>
+  <button class="btn ghost" type="submit">Search</button>
+</form>
+
+<section class="card">
+<table class="list">
+  <thead><tr><th>AI</th><th>Kw</th><th>News</th><th>Status</th><th>Seen</th></tr></thead>
+  <tbody>
+  {% for i in rows %}
+  <tr>
+    <td>{{ score(i.ai_score) }}</td>
+    <td class="mono small">{{ i.keyword_score }}</td>
+    <td>
+      <a class="item-title" href="{{ i.url }}" target="_blank" rel="noopener noreferrer">{{ i.title }}</a>
+      {% if i.ai_summary_pl %}<p class="item-summary">{{ i.ai_summary_pl }}</p>{% endif %}
+      <div class="small muted">{{ i.source or 'deleted source' }} · published {{ i.published_at|dt }}
+        {% if i.ai_reason %} · AI: {{ i.ai_reason }}{% endif %}</div>
+      {% if i.matched_keywords %}<div>{% for t in i.matched_keywords %}<span class="kw">{{ t }}</span>{% endfor %}</div>{% endif %}
+    </td>
+    <td>{{ status_tag(i.status) }}{% if i.ai_attempts and i.status in ('pending_ai', 'ai_error') %}<div class="muted small">{{ i.ai_attempts }} AI attempt(s)</div>{% endif %}</td>
+    <td class="small nowrap">{{ i.fetched_at|dt }}</td>
+  </tr>
+  {% else %}<tr><td colspan="5" class="muted">Nothing found.</td></tr>{% endfor %}
+  </tbody>
+</table>
+</section>
+{% endblock %}

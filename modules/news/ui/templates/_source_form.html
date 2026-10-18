@@ -1,0 +1,20 @@
+{# Shared by sources.html (add) and source_edit.html. `s` is the row or none. #}
+{% macro source_fields(s=none) %}
+  <label>Type
+    <select name="source_type">
+      {% for k, v in SOURCE_TYPES.items() %}<option value="{{ k }}" {{ 'selected' if s and s.source_type == k }}>{{ v }}</option>{% endfor %}
+    </select>
+  </label>
+  <label class="grow">Name<input name="name" required maxlength="80" value="{{ s.name if s else '' }}" placeholder="e.g. GN: ransomware"></label>
+  <label class="grow"><span data-target-label>Search query / feed URL</span>
+    <input name="target" required maxlength="500" value="{{ (s.query or s.endpoint) if s else '' }}"></label>
+  <label>Topic
+    <select name="topic">{% for k, v in TOPICS.items() %}<option value="{{ k }}" {{ 'selected' if s and s.topic == k }}>{{ v }}</option>{% endfor %}</select>
+  </label>
+  <label>Language
+    <select name="lang">{% for k, v in LANGS.items() %}<option value="{{ k }}" {{ 'selected' if s and s.lang == k }}>{{ v }}</option>{% endfor %}</select>
+  </label>
+  <label>Check every (min)<input class="num short" name="poll_minutes" type="number" min="5" max="1440" value="{{ s.poll_minutes if s else 15 }}"></label>
+  <label>Bonus<input class="num short" name="base_score" type="number" min="-10" max="10" value="{{ s.base_score if s else 0 }}"></label>
+  <label class="grow">Note<input name="note" maxlength="200" value="{{ (s.note or '') if s else '' }}"></label>
+{% endmacro %}

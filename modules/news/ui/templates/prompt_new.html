@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}New prompt version{% endblock %}
+{% block content %}
+<h1>New prompt version</h1>
+<form method="post" class="card">
+  <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+  <div class="form-row">
+    <label>Version<input name="version" value="{{ version }}" required maxlength="20" pattern="[A-Za-z0-9._-]{1,20}"></label>
+    <label class="grow">Note<input name="notes" value="{{ notes }}" maxlength="500"></label>
+  </div>
+  <label>Text
+    <textarea name="system_prompt" class="prompt" spellcheck="false" data-counter>{{ text }}</textarea>
+  </label>
+  <div class="counter muted small"></div>
+  <div class="actions">
+    <button class="btn primary" type="submit">Create draft</button>
+    <a class="btn ghost" href="{{ url_for('prompts_page') }}">Cancel</a>
+  </div>
+</form>
+{% endblock %}

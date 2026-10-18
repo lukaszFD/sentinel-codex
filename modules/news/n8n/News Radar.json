@@ -1,0 +1,738 @@
+{
+  "name": "News Radar",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 15
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -600,
+        260
+      ],
+      "id": "54ac8567-7506-5f9f-a2e2-c3323f521007",
+      "name": "Every 15 minutes"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Retire items that used up ai_max_attempts, apply retention_days.\nSELECT news.sp_housekeeping();",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -300,
+        0
+      ],
+      "id": "9e647d00-19c4-55ee-a907-9847832567c5",
+      "name": "Housekeeping",
+      "credentials": {
+        "postgres": {
+          "id": "cdxNewsPostgres1",
+          "name": "Codex news (Postgres)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Active sources whose poll_minutes has passed (empty when enabled = 0).\nSELECT * FROM news.v_due_sources;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -300,
+        260
+      ],
+      "id": "aa02f19f-ea6c-5877-8449-a056fbbdea08",
+      "name": "Due sources",
+      "credentials": {
+        "postgres": {
+          "id": "cdxNewsPostgres1",
+          "name": "Codex news (Postgres)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build fetch request\n// Turns each due source row into the URL the \"Fetch source\" node calls.\n// Google News and Hacker News sources only store a search query.\n// Mode: Run Once for All Items.\n\nconst GN_LOCALE = {\n  en: { hl: 'en-US', gl: 'US', ceid: 'US:en' },\n  pl: { hl: 'pl', gl: 'PL', ceid: 'PL:pl' },\n};\nconst qs = (o) => Object.entries(o)\n  .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)\n  .join('&');\nconst dayAgo = Math.floor(Date.now() / 1000) - 86400;\n\nreturn $input.all()\n  .map((item, idx) => ({ s: item.json, idx }))\n  .filter(({ s }) => s.id)\n  .map(({ s, idx }) => {\n    let url;\n    if (s.source_type === 'google_news') {\n      url = 'https://news.google.com/rss/search?'\n        + qs({ q: `${s.query} when:1d`, ...(GN_LOCALE[s.lang] || GN_LOCALE.en) });\n    } else if (s.source_type === 'hn_algolia') {\n      url = 'https://hn.algolia.com/api/v1/search_by_date?'\n        + qs({ query: s.query, tags: 'story', hitsPerPage: 50, numericFilters: `created_at_i>${dayAgo}` });\n    } else {\n      url = s.endpoint;\n    }\n    return {\n      json: { source_id: s.id, source_name: s.name, source_type: s.source_type, fetch_url: url },\n      pairedItem: { item: idx },\n    };\n  });\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -60,
+        260
+      ],
+      "id": "d5305725-c396-586e-9c0c-d0c055c33abb",
+      "name": "Build fetch request"
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.fetch_url }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "User-Agent",
+              "value": "Mozilla/5.0 (compatible; CyberSentinel-NewsRadar/1.0)"
+            },
+            {
+              "name": "Accept",
+              "value": "application/rss+xml, application/atom+xml, application/xml, application/json;q=0.9, */*;q=0.8"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "text"
+            }
+          },
+          "timeout": 20000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        180,
+        260
+      ],
+      "id": "39c3b89e-b808-5e40-87bd-0b533d6e29dd",
+      "name": "Fetch source",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Parse feed\n// Normalises one HTTP response (RSS, Atom, Hacker News JSON, CISA KEV JSON)\n// into [{url, title, summary, published_at}] for sp_record_fetch().\n// Never throws: a failed source is passed on as `error`, so one dead feed\n// cannot stop the run.\n// Mode: Run Once for Each Item.\n\nconst src = $('Build fetch request').item.json;\nconst res = $json;\nconst MAX_ITEMS = 100;\n\nconst out = (items, error) => ({\n  json: {\n    source_id: src.source_id,\n    source_name: src.source_name,\n    items: items.slice(0, MAX_ITEMS),\n    error: error ? String(error).slice(0, 500) : '',\n  },\n});\n\nconst decodeEntities = (s) => s\n  .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCodePoint(parseInt(h, 16)))\n  .replace(/&#(\\d+);/g, (_, d) => String.fromCodePoint(Number(d)))\n  .replace(/&nbsp;/g, ' ')\n  .replace(/&quot;/g, '\"')\n  .replace(/&apos;/g, \"'\")\n  .replace(/&lt;/g, '<')\n  .replace(/&gt;/g, '>')\n  .replace(/&amp;/g, '&');\n\n// CDATA -> entities -> tags -> entities again: Google News puts escaped\n// HTML (with its own &nbsp;) in <description>.\nconst clean = (s) => decodeEntities(\n  decodeEntities(String(s ?? '').replace(/<!\\[CDATA\\[([\\s\\S]*?)\\]\\]>/g, '$1'))\n    .replace(/<[^>]*>/g, ' '),\n)\n  .replace(/\\s+/g, ' ')\n  .trim();\n\nconst tag = (block, names) => {\n  for (const name of names) {\n    const m = block.match(new RegExp(`<${name}(?:\\\\s[^>]*)?>([\\\\s\\\\S]*?)</${name}>`, 'i'));\n    if (m) return m[1];\n  }\n  return '';\n};\n\nconst isoDate = (s) => {\n  const d = new Date(clean(s));\n  return Number.isNaN(d.getTime()) ? null : d.toISOString();\n};\n\nconst atomLink = (block) => {\n  const links = [...block.matchAll(/<link\\b([^>]*)\\/?>/gi)].map((m) => m[1]);\n  const pick = links.find((a) => !/rel=[\"']/.test(a) || /rel=[\"']alternate[\"']/.test(a)) || links[0];\n  const href = pick && pick.match(/href=[\"']([^\"']+)[\"']/i);\n  return href ? decodeEntities(href[1]) : '';\n};\n\nconst parseXml = (xml) => {\n  const rss = [...xml.matchAll(/<item\\b[\\s\\S]*?<\\/item>/gi)].map((m) => m[0]);\n  if (rss.length) {\n    return rss.map((b) => ({\n      url: clean(tag(b, ['link'])) || clean(tag(b, ['guid'])),\n      title: clean(tag(b, ['title'])),\n      summary: clean(tag(b, ['description', 'content:encoded'])).slice(0, 2000),\n      published_at: isoDate(tag(b, ['pubDate', 'dc:date', 'published', 'updated'])),\n    }));\n  }\n  const atom = [...xml.matchAll(/<entry\\b[\\s\\S]*?<\\/entry>/gi)].map((m) => m[0]);\n  return atom.map((b) => ({\n    url: atomLink(b),\n    title: clean(tag(b, ['title'])),\n    summary: clean(tag(b, ['summary', 'content'])).slice(0, 2000),\n    published_at: isoDate(tag(b, ['published', 'updated'])),\n  }));\n};\n\nconst parseHn = (data) => (data.hits || []).map((h) => ({\n  url: h.url || `https://news.ycombinator.com/item?id=${h.objectID}`,\n  title: h.title || '',\n  summary: `Hacker News: ${h.points ?? 0} points, ${h.num_comments ?? 0} comments`,\n  published_at: h.created_at || null,\n}));\n\n// KEV only has a date. Entries added today or yesterday (UTC) are new to us\n// and get \"now\" as published_at, otherwise max_item_age_hours would mark\n// yesterday's additions stale. URL dedupe stops them repeating.\nconst parseKev = (data) => {\n  const cutoff = new Date(Date.now() - 86400000).toISOString().slice(0, 10);\n  const now = new Date().toISOString();\n  return (data.vulnerabilities || [])\n    .filter((v) => v.dateAdded && v.dateAdded >= cutoff)\n    .map((v) => ({\n      url: `https://nvd.nist.gov/vuln/detail/${v.cveID}`,\n      title: `${v.cveID}: ${v.vulnerabilityName} (${v.vendorProject} ${v.product}) added to CISA KEV`,\n      summary: `${v.shortDescription || ''} Required action: ${v.requiredAction || ''}`.trim(),\n      published_at: now,\n    }));\n};\n\nif (res.error) return out([], res.error.message || JSON.stringify(res.error));\nif (res.statusCode !== 200) return out([], `HTTP ${res.statusCode} ${res.statusMessage || ''}`.trim());\n\ntry {\n  const body = res.body ?? res.data ?? '';\n  const raw = typeof body === 'string' ? body : JSON.stringify(body);\n  let items;\n  if (src.source_type === 'hn_algolia') items = parseHn(typeof body === 'string' ? JSON.parse(raw) : body);\n  else if (src.source_type === 'cisa_kev') items = parseKev(typeof body === 'string' ? JSON.parse(raw) : body);\n  else items = parseXml(raw);\n  items = items.filter((i) => /^https?:\\/\\//.test(i.url) && i.title);\n  return out(items, null);\n} catch (e) {\n  return out([], `parse error: ${e.message}`);\n}\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        420,
+        260
+      ],
+      "id": "e349a56a-f854-54fc-a489-dbaa8d0d79c0",
+      "name": "Parse feed"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- New items get a status (stale / duplicate / filtered / pending_ai / alert),\n-- known URLs are ignored. A non-empty error marks the source as failed.\nSELECT $1::int AS source_id,\n       news.sp_record_fetch($1::int, $2::jsonb, NULLIF($3, '')) AS result;",
+        "options": {
+          "queryReplacement": "={{ [ $json.source_id, JSON.stringify($json.items), $json.error ] }}"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        660,
+        260
+      ],
+      "id": "47be2f3c-bebe-5c6b-9a30-2c5747baa083",
+      "name": "Record fetch",
+      "credentials": {
+        "postgres": {
+          "id": "cdxNewsPostgres1",
+          "name": "Codex news (Postgres)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Up to ai_batch_size pending items + the active prompt.\nSELECT c.*, p.version AS prompt_version, p.system_prompt\nFROM news.sp_claim_for_ai() c\nCROSS JOIN (SELECT version, system_prompt\n            FROM news.prompts WHERE is_active) p;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -300,
+        520
+      ],
+      "id": "8581f46c-3bc7-5954-895e-6d2292f08e6b",
+      "name": "Claim AI batch",
+      "credentials": {
+        "postgres": {
+          "id": "cdxNewsPostgres1",
+          "name": "Codex news (Postgres)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build Gemini request\n// One generateContent call for the whole claimed batch. The active prompt\n// (prompts) gets the items in place of [[ITEMS_JSON]]; JSON mode +\n// responseSchema make the answer machine-readable.\n// Mode: Run Once for All Items.\n\nconst MODEL = 'gemini-3.1-flash-lite';\n\nconst rows = $input.all().map((i) => i.json).filter((r) => r.id);\nif (!rows.length) return [];\n\nconst items = rows.map((r) => ({\n  id: Number(r.id),\n  source: r.source,\n  title: r.title,\n  summary: (r.summary || '').slice(0, 600),\n  published_at: r.published_at,\n  matched_keywords: r.matched_keywords,\n}));\n\nconst prompt = rows[0].system_prompt.replace('[[ITEMS_JSON]]', JSON.stringify(items, null, 1));\n\nconst body = {\n  contents: [{ role: 'user', parts: [{ text: prompt }] }],\n  generationConfig: {\n    temperature: 0.2,\n    maxOutputTokens: 4096,\n    responseMimeType: 'application/json',\n    responseSchema: {\n      type: 'ARRAY',\n      items: {\n        type: 'OBJECT',\n        properties: {\n          id: { type: 'INTEGER' },\n          score: { type: 'INTEGER' },\n          summary_pl: { type: 'STRING' },\n          reason: { type: 'STRING' },\n        },\n        required: ['id', 'score', 'summary_pl', 'reason'],\n      },\n    },\n  },\n};\n\nreturn [{\n  json: { model: MODEL, prompt_version: rows[0].prompt_version, ids: items.map((i) => i.id), body },\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -60,
+        520
+      ],
+      "id": "eefda6c3-2d87-5853-8ec5-2179aa268dfc",
+      "name": "Build Gemini request"
+    },
+    {
+      "parameters": {
+        "secretPath": "sentinel-codex/api-keys/gemini",
+        "additionalFields": {}
+      },
+      "type": "n8n-nodes-hashi-vault.hashiCorpVault",
+      "typeVersion": 1,
+      "position": [
+        160,
+        520
+      ],
+      "id": "c2047136-6a79-53a1-b445-228d63e41b04",
+      "name": "Gemini API key",
+      "credentials": {
+        "hashiCorpVaultApi": {
+          "id": "cdxVaultToken001",
+          "name": "Codex Vault"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://generativelanguage.googleapis.com/v1beta/models/{{ $('Build Gemini request').first().json.model }}:generateContent",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-goog-api-key",
+              "value": "={{ $json.data.token }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($('Build Gemini request').first().json.body) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 90000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        380,
+        520
+      ],
+      "id": "f347cfb4-b768-55ce-9d63-72d8a927512d",
+      "name": "Gemini score batch",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 5000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse verdicts\n// Keeps only well-formed verdicts for ids that were actually claimed.\n// On any error nothing is stored: the items stay pending_ai and are\n// retried; after ai_max_attempts housekeeping marks them ai_error.\n// Mode: Run Once for All Items.\n\nconst req = $('Build Gemini request').first().json;\nconst res = $input.first().json;\n\nlet verdicts = [];\nlet error = '';\n\nif (res.error) {\n  error = `Gemini request failed: ${res.error.message || JSON.stringify(res.error)}`;\n} else if (res.statusCode !== 200) {\n  error = `Gemini HTTP ${res.statusCode}: ${res.body?.error?.message || res.statusMessage || ''}`;\n} else {\n  try {\n    const parts = res.body?.candidates?.[0]?.content?.parts || [];\n    const parsed = JSON.parse(parts.map((p) => p.text || '').join(''));\n    const claimed = new Set(req.ids);\n    verdicts = (Array.isArray(parsed) ? parsed : [])\n      .map((v) => ({\n        id: Number(v.id),\n        score: Math.round(Number(v.score)),\n        summary_pl: String(v.summary_pl ?? '').slice(0, 1000),\n        reason: String(v.reason ?? '').slice(0, 500),\n      }))\n      .filter((v) => claimed.has(v.id) && v.score >= 1 && v.score <= 5);\n  } catch (e) {\n    error = `Cannot parse Gemini answer: ${e.message}`;\n  }\n}\n\nreturn [{\n  json: {\n    verdicts,\n    model: req.model,\n    prompt_version: req.prompt_version,\n    claimed: req.ids.length,\n    error,\n  },\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        600,
+        520
+      ],
+      "id": "92cb13c0-ce2e-588a-9601-81cb6ed77c2a",
+      "name": "Parse verdicts"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- score >= digest_min_ai_score => alert (next digest), else scored.\nSELECT news.sp_store_verdicts($1::jsonb, $2, $3) AS stored,\n       $4::int AS claimed, NULLIF($5, '') AS error;",
+        "options": {
+          "queryReplacement": "={{ [ JSON.stringify($json.verdicts), $json.model, $json.prompt_version, $json.claimed, $json.error ] }}"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        820,
+        520
+      ],
+      "id": "bb5bff3c-49a6-50ae-8864-c975acb4501d",
+      "name": "Store verdicts",
+      "credentials": {
+        "postgres": {
+          "id": "cdxNewsPostgres1",
+          "name": "Codex news (Postgres)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Nothing unless a slot from digest_slots is due; sp_digest_begin()\n-- claims the slot so it is sent once. One row per digest item, or one row\n-- with only digest_id when nothing qualifies.\nWITH d AS MATERIALIZED (\n    SELECT news.sp_digest_begin() AS digest_id\n)\nSELECT d.digest_id, i.id, i.source, i.topic, i.title, i.url, i.published_at,\n       i.ai_score, i.ai_summary_pl, i.keyword_score\nFROM d\nLEFT JOIN news.v_digest_items i ON TRUE\nWHERE d.digest_id IS NOT NULL;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -300,
+        800
+      ],
+      "id": "aaadcb64-8c1d-5c2a-9428-d77918163d6d",
+      "name": "Digest due?",
+      "credentials": {
+        "postgres": {
+          "id": "cdxNewsPostgres1",
+          "name": "Codex news (Postgres)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build digest e-mail\n// Input: rows of \"Digest due?\" — nothing when no slot is due, one row with\n// only digest_id when the slot is due but nothing qualifies, otherwise one\n// row per item. Every dynamic value is HTML-escaped (titles and summaries\n// come from the internet).\n// Mode: Run Once for All Items.\n\nconst rows = $input.all().map((i) => i.json).filter((r) => r.digest_id);\nif (!rows.length) return [];\n\nconst digestId = rows[0].digest_id;\nconst items = rows.filter((r) => r.id);\nif (!items.length) {\n  return [{ json: { digest_id: digestId, empty: true, ids: '{}' } }];\n}\n\nconst esc = (v) => String(v ?? '')\n  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')\n  .replace(/\"/g, '&quot;').replace(/'/g, '&#39;');\nconst safeUrl = (u) => (/^https?:\\/\\//i.test(u || '') ? esc(u) : '#');\nconst local = (ts) => DateTime.fromISO(new Date(ts).toISOString()).setZone('Europe/Warsaw');\n\nconst SCORE_COLOR = { 5: '#f44336', 4: '#ff9800', 3: '#ffc107', 2: '#90a4ae', 1: '#607d8b' };\nconst TOPICS = [\n  ['cyber', '🛡️ Cyber'],\n  ['ai', '🤖 AI'],\n  ['both', '📌 Other'],\n];\n\nconst card = (r) => {\n  const score = r.ai_score ?? '–';\n  const color = SCORE_COLOR[r.ai_score] || '#607d8b';\n  const summary = r.ai_summary_pl || '';\n  return `\n  <div style=\"border-left:4px solid ${color};background:#252525;border-radius:4px;padding:10px 12px;margin:0 0 10px;\">\n    <div style=\"font-size:15px;line-height:1.4;\">\n      <span style=\"display:inline-block;min-width:22px;text-align:center;background:${color};color:#111;font-weight:700;border-radius:3px;padding:0 5px;margin-right:6px;\">${esc(score)}</span>\n      <a href=\"${safeUrl(r.url)}\" style=\"color:#90caf9;text-decoration:none;\">${esc(r.title)}</a>\n    </div>\n    ${summary ? `<div style=\"margin-top:6px;font-size:14px;line-height:1.5;color:#e0e0e0;\">${esc(summary)}</div>` : ''}\n    <div style=\"margin-top:6px;font-size:12px;color:#888;\">${esc(r.source || '')} · ${esc(local(r.published_at).toFormat('dd.MM HH:mm'))}</div>\n  </div>`;\n};\n\nconst sections = TOPICS\n  .map(([topic, label]) => {\n    const list = items.filter((r) => (r.topic || 'both') === topic);\n    if (!list.length) return '';\n    return `<h3 style=\"margin:18px 0 8px;color:#bbb;font-size:14px;text-transform:uppercase;letter-spacing:.05em;\">${label} (${list.length})</h3>${list.map(card).join('')}`;\n  })\n  .join('');\n\nconst now = DateTime.now().setZone('Europe/Warsaw');\nconst top = Math.max(...items.map((r) => Number(r.ai_score) || 0));\nconst subject = `📰 News Radar ${now.toFormat('HH:mm')} — ${items.length} ${items.length === 1 ? 'news' : 'newsów'}`\n  + (top >= 5 ? ' (jest coś pilnego)' : '');\n\nconst html = `<!DOCTYPE html>\n<html><body style=\"font-family:'Segoe UI',Tahoma,sans-serif;background:#121212;color:#e0e0e0;margin:0;padding:20px;\">\n<div style=\"max-width:680px;margin:auto;background:#1e1e1e;border:1px solid #333;border-top:4px solid #3fb68b;border-radius:8px;overflow:hidden;\">\n  <div style=\"background:#1b3320;padding:14px;text-align:center;\">\n    <h2 style=\"margin:0;color:#81c784;\">Sentinel Codex · News Radar</h2>\n    <div style=\"color:#9e9e9e;font-size:13px;margin-top:4px;\">${esc(now.toFormat('dd.MM.yyyy HH:mm'))} · ${items.length} pozycji, od najważniejszych</div>\n  </div>\n  <div style=\"padding:18px 22px;\">${sections}</div>\n  <div style=\"padding:10px 22px 16px;color:#777;font-size:11px;\">Ocena 1–5 i streszczenia: Gemini. Źródła, słowa kluczowe i godziny wysyłki: strona Sentinel Codex · News Radar.</div>\n</div>\n</body></html>`;\n\nreturn [{\n  json: {\n    digest_id: digestId,\n    empty: false,\n    ids: `{${items.map((r) => r.id).join(',')}}`,\n    subject,\n    html,\n  },\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -60,
+        800
+      ],
+      "id": "dce93ad5-8b5f-5234-88a8-2253662c7e9b",
+      "name": "Build digest e-mail"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "91b11702-fb3a-541b-982c-fa349d9aaf3e",
+              "leftValue": "={{ $json.empty === false }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        180,
+        800
+      ],
+      "id": "8842804f-1b5a-51e7-9335-f0c8876b72c8",
+      "name": "Anything to send?"
+    },
+    {
+      "parameters": {
+        "secretPath": "sentinel-codex/credentials/gmail",
+        "additionalFields": {}
+      },
+      "type": "n8n-nodes-hashi-vault.hashiCorpVault",
+      "typeVersion": 1,
+      "position": [
+        420,
+        720
+      ],
+      "id": "b1342d2e-03b2-5343-9432-01f5a9f6276a",
+      "name": "Get Email Pass",
+      "credentials": {
+        "hashiCorpVaultApi": {
+          "id": "cdxVaultToken001",
+          "name": "Codex Vault"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "fromEmail": "={{ $('Get Email Pass').item.json.data.user }}",
+        "toEmail": "={{ $('Get Email Pass').item.json.data.to }}",
+        "subject": "={{ $('Build digest e-mail').item.json.subject }}",
+        "html": "={{ $('Build digest e-mail').item.json.html }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        660,
+        720
+      ],
+      "id": "418a81ec-0f48-50cf-92d9-40ff5b86448e",
+      "name": "Send digest",
+      "webhookId": "f286f8fc-d0d2-572c-ac99-dad164f4ee89",
+      "credentials": {
+        "smtp": {
+          "id": "cdxSmtpGmail0001",
+          "name": "Codex SMTP"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 10000,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT news.sp_digest_finish($1::bigint, $2::bigint[]);",
+        "options": {
+          "queryReplacement": "={{ [ $('Build digest e-mail').item.json.digest_id, $('Build digest e-mail').item.json.ids ] }}"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        920,
+        640
+      ],
+      "id": "adbb62d3-365b-5a03-9848-b105934dbd02",
+      "name": "Mark digest sent",
+      "credentials": {
+        "postgres": {
+          "id": "cdxNewsPostgres1",
+          "name": "Codex news (Postgres)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Items stay 'alert'; the slot is retried on the next runs (max 3 attempts).\nSELECT news.sp_digest_finish($1::bigint, '{}'::bigint[], $2);",
+        "options": {
+          "queryReplacement": "={{ [ $('Build digest e-mail').item.json.digest_id, String($json.error?.message ?? $json.error ?? 'e-mail send failed').slice(0, 500) ] }}"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        920,
+        800
+      ],
+      "id": "b5eb6c36-b513-5a63-a71a-24e554449b72",
+      "name": "Mark digest failed",
+      "credentials": {
+        "postgres": {
+          "id": "cdxNewsPostgres1",
+          "name": "Codex news (Postgres)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT news.sp_digest_finish($1::bigint, '{}'::bigint[]);",
+        "options": {
+          "queryReplacement": "={{ [ $json.digest_id ] }}"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        420,
+        920
+      ],
+      "id": "6ec48ce5-bb55-5ea1-8ae7-3ad970ca3413",
+      "name": "Mark digest empty",
+      "credentials": {
+        "postgres": {
+          "id": "cdxNewsPostgres1",
+          "name": "Codex news (Postgres)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "## News Radar\nAI + cyber news → Gemini score 1–5 → e-mail digest.\n\nSentinel Codex, module `news`. All configuration lives in database `knowledge_hub`, schema `news`, edited on the **codex-news** page (sources, keywords, thresholds, digest times, prompt). Nothing to change here.\n\nBranches run top to bottom on every trigger; each one stops by itself when it has nothing to do.",
+        "height": 230,
+        "width": 340,
+        "color": 4
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -680,
+        -260
+      ],
+      "id": "3bef7d45-bd4a-5e1b-850c-f6d792df4491",
+      "name": "Note overview"
+    },
+    {
+      "parameters": {
+        "content": "### 1 · Fetch\nOnly sources whose `poll_minutes` passed. A failed feed is recorded (`source_state`) and never stops the run.",
+        "height": 260,
+        "width": 1120
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -340,
+        140
+      ],
+      "id": "2c72742c-27eb-5b18-82ff-5def7b1de136",
+      "name": "Note fetch"
+    },
+    {
+      "parameters": {
+        "content": "### 2 · AI score\nOne Gemini call per run (`ai_batch_size` items), key from Vault `sentinel-codex/api-keys/gemini`. Bad answer = items stay pending and are retried; after `ai_max_attempts` they become `ai_error`.\nModel: `MODEL` in *Build Gemini request*.",
+        "height": 260,
+        "width": 1320
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -340,
+        400
+      ],
+      "id": "34e55089-7fd0-5dd1-a502-f79e8716e029",
+      "name": "Note ai"
+    },
+    {
+      "parameters": {
+        "content": "### 3 · Digest\nSent on the first run after each active slot (08:00 / 13:00 / 18:00 Europe/Warsaw by default). A failed send is retried up to 3 times.",
+        "height": 400,
+        "width": 1380
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -340,
+        600
+      ],
+      "id": "5ac49dbb-754b-55dd-9f2e-f3da2db987c7",
+      "name": "Note digest"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Every 15 minutes": {
+      "main": [
+        [
+          {
+            "node": "Housekeeping",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Due sources",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Claim AI batch",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Digest due?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Due sources": {
+      "main": [
+        [
+          {
+            "node": "Build fetch request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build fetch request": {
+      "main": [
+        [
+          {
+            "node": "Fetch source",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch source": {
+      "main": [
+        [
+          {
+            "node": "Parse feed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse feed": {
+      "main": [
+        [
+          {
+            "node": "Record fetch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claim AI batch": {
+      "main": [
+        [
+          {
+            "node": "Build Gemini request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Gemini request": {
+      "main": [
+        [
+          {
+            "node": "Gemini API key",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini API key": {
+      "main": [
+        [
+          {
+            "node": "Gemini score batch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini score batch": {
+      "main": [
+        [
+          {
+            "node": "Parse verdicts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse verdicts": {
+      "main": [
+        [
+          {
+            "node": "Store verdicts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Digest due?": {
+      "main": [
+        [
+          {
+            "node": "Build digest e-mail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build digest e-mail": {
+      "main": [
+        [
+          {
+            "node": "Anything to send?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Anything to send?": {
+      "main": [
+        [
+          {
+            "node": "Get Email Pass",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Mark digest empty",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Email Pass": {
+      "main": [
+        [
+          {
+            "node": "Send digest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send digest": {
+      "main": [
+        [
+          {
+            "node": "Mark digest sent",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Mark digest failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "timezone": "Europe/Warsaw"
+  },
+  "versionId": "3493534c-c4b5-513f-b586-da236a4a160c",
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "id": "cdxNewsRadar0001",
+  "tags": []
+}

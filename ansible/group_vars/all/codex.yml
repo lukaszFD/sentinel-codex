@@ -1,0 +1,70 @@
+---
+# ============================================================
+# Sentinel Codex — non-secret variables
+# ============================================================
+# Secrets: group_vars/all/vault.yml (ansible-vault), see vault.yml.example.
+# ============================================================
+
+# ------------------------------------------------------------
+# [VARS.PATHS]
+# ------------------------------------------------------------
+# Repo root on the control machine — derived, no absolute path.
+codex_repo_dir: "{{ playbook_dir | dirname }}"
+# Deployment directory on the server (compose file, .env, build contexts).
+codex_deploy_dir: "/home/{{ ansible_user }}/sentinel-codex"
+deployment_user: "{{ ansible_user }}"
+# Same rule as Cyber Sentinel playbook 05 (server_name suffix).
+domain_suffix: "{{ 'local' if inventory_hostname in groups['vm-prox-dev'] else 'prod' }}"
+
+# ------------------------------------------------------------
+# [VARS.PLATFORM] What this project uses from Cyber Sentinel
+# ------------------------------------------------------------
+# Renaming any of these in Cyber Sentinel breaks Codex — change them
+# here in the same commit. Every playbook checks the containers first.
+platform_network: "cyber-sentinel_internal_network"
+platform_postgres_container: "postgres_db"
+platform_n8n_container: "n8n-server"
+platform_nginx_container: "nginx-proxy"
+# Bind-mounted into nginx-proxy as /etc/nginx/{conf.d,certs}
+# (Cyber Sentinel playbook 05). Codex only adds files prefixed codex_.
+platform_nginx_dir: "/home/{{ ansible_user }}/config/nginx"
+# HashiCorp Vault (Cyber Sentinel 06.1: initialized, unsealed, KV v2 at secret/).
+# Ansible talks to it from the host, n8n from the Docker network.
+platform_vault_url: "http://127.0.0.1:8200"
+platform_vault_internal_url: "http://10.10.10.12:8200"
+
+# ------------------------------------------------------------
+# [VARS.VAULT] Codex space in Vault
+# ------------------------------------------------------------
+# Secrets live under secret/sentinel-codex/. n8n reads them with its own
+# read-only token (policy below) — Cyber Sentinel's n8n token cannot read
+# them, and this token cannot read Cyber Sentinel's.
+codex_vault_prefix: "sentinel-codex"
+codex_vault_policy: "sentinel-codex-n8n"
+codex_vault_token_period: "8760h"
+
+# ------------------------------------------------------------
+# [VARS.N8N] Codex credentials in n8n (fixed ids, referenced by workflows)
+# ------------------------------------------------------------
+codex_vault_credential_id: "cdxVaultToken001"
+codex_vault_credential_name: "Codex Vault"
+codex_smtp_credential_id: "cdxSmtpGmail0001"
+codex_smtp_credential_name: "Codex SMTP"
+
+# ------------------------------------------------------------
+# [VARS.DB] Database knowledge_hub
+# ------------------------------------------------------------
+codex_db_name: "knowledge_hub"
+
+# ------------------------------------------------------------
+# [VARS.NEWS] Module news (News Radar)
+# ------------------------------------------------------------
+news_n8n_db_user: "news_n8n"
+news_editor_db_user: "news_editor"
+# Fixed ids: the workflow JSON references them (modules/news/n8n/build_workflow.py).
+news_n8n_credential_id: "cdxNewsPostgres1"
+news_n8n_credential_name: "Codex news (Postgres)"
+news_workflow_id: "cdxNewsRadar0001"
+news_workflow_file: "News Radar.json"
+# Same shape as the services list in Cyber Sentinel playbook 05.
+news_ui_vhost: { name: "codex_news", port: 8000, internal_host: "codex-news-ui", hostname: "codex-news" }

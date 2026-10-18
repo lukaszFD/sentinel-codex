@@ -1,0 +1,121 @@
+---
+# ============================================================
+# Sentinel Codex — Playbook 01 — Database knowledge_hub
+# ============================================================
+# Purpose:    1. creates database knowledge_hub in Cyber Sentinel's
+#                Postgres (hub/postgres/00_knowledge_hub.sql)
+#             2. applies module schemas with their roles
+#                (modules/news/db/10_news.sql)
+#             3. verifies least privilege of the module roles
+#
+# Depends on: - Cyber Sentinel running (container postgres_db)
+#             - vault: vault_news_n8n_db_password, vault_news_editor_db_password
+#
+# Idempotent: both scripts are re-runnable; tuned settings and edited
+#             config rows are kept.
+# ============================================================
+
+- name: 01 - Database knowledge_hub
+  hosts: all_servers
+  become: yes
+
+  vars:
+    postgres_init_log: "{{ codex_deploy_dir }}/postgres_init.log"
+    psql: "docker exec -i {{ platform_postgres_container }} psql -U postgres -v ON_ERROR_STOP=1"
+
+  tasks:
+    # ============================================================
+    # SECTION 0 — Pre-flight
+    # ============================================================
+
+    - name: "[01.0.1] Assert module DB passwords are long and quote-safe"
+      ansible.builtin.assert:
+        that:
+          - lookup('vars', item, default='') | string | length >= 20
+          - lookup('vars', item, default='') is regex('^[A-Za-z0-9_-]+$')
+        fail_msg: "{{ item }} must be >= 20 chars of [A-Za-z0-9_-] (openssl rand -hex 24) — see vault.yml.example."
+        quiet: true
+      loop:
+        - vault_news_n8n_db_password
+        - vault_news_editor_db_password
+      no_log: true
+
+    - name: "[01.0.2] Verify Cyber Sentinel Postgres is running"
+      ansible.builtin.command:
+        cmd: "docker inspect -f '{{ '{{' }}.State.Running{{ '}}' }}' {{ platform_postgres_container }}"
+      register: codex_pg_running
+      changed_when: false
+      failed_when: codex_pg_running.rc != 0 or codex_pg_running.stdout | trim != 'true'
+
+    - name: "[01.0.3] Create deployment directory"
+      ansible.builtin.file:
+        path: "{{ codex_deploy_dir }}"
+        state: directory
+        owner: "{{ deployment_user }}"
+        group: "{{ deployment_user }}"
+        mode: '0750'
+
+    # ============================================================
+    # SECTION 1 — Database (no secrets, connects to `postgres`)
+    # ============================================================
+
+    - name: "[01.1.1] Stage knowledge_hub SQL"
+      ansible.builtin.copy:
+        src: "{{ codex_repo_dir }}/hub/postgres/00_knowledge_hub.sql"
+        dest: "{{ codex_deploy_dir }}/00_knowledge_hub.sql"
+        owner: "{{ deployment_user }}"
+        mode: '0640'
+
+    - name: "[01.1.2] Create database knowledge_hub"
+      ansible.builtin.shell:
+        cmd: |
+          echo "--- knowledge_hub: $(date) ---" >> {{ postgres_init_log }}
+          {{ psql }} -d postgres < {{ codex_deploy_dir }}/00_knowledge_hub.sql >> {{ postgres_init_log }} 2>&1
+      register: codex_hub_sql
+      until: codex_hub_sql.rc == 0
+      retries: 5
+      delay: 10
+
+    # ============================================================
+    # SECTION 2 — Module news (rendered: contains role passwords)
+    # ============================================================
+
+    - name: "[01.2.X] Apply module news"
+      block:
+        - name: "[01.2.1] Render module news SQL"
+          ansible.builtin.template:
+            src: "{{ codex_repo_dir }}/modules/news/db/10_news.sql"
+            dest: "{{ codex_deploy_dir }}/10_news_rendered.sql"
+            owner: "{{ deployment_user }}"
+            mode: '0600'
+          no_log: true
+
+        - name: "[01.2.2] Execute module news SQL against knowledge_hub"
+          ansible.builtin.shell:
+            cmd: |
+              echo "--- module news: $(date) ---" >> {{ postgres_init_log }}
+              {{ psql }} -d {{ codex_db_name }} < {{ codex_deploy_dir }}/10_news_rendered.sql >> {{ postgres_init_log }} 2>&1
+
+      always:
+        - name: "[01.2.3] Remove rendered SQL (contains cleartext passwords)"
+          ansible.builtin.file:
+            path: "{{ codex_deploy_dir }}/10_news_rendered.sql"
+            state: absent
+
+    # The editor edits config only, n8n writes runtime data only,
+    # neither can create objects.
+    - name: "[01.2.4] Verify module news role privileges"
+      ansible.builtin.command:
+        cmd: >-
+          docker exec {{ platform_postgres_container }} psql -U postgres -d {{ codex_db_name }} -At -c
+          "SELECT has_column_privilege('{{ news_editor_db_user }}', 'news.settings', 'value', 'UPDATE')
+              AND NOT has_table_privilege('{{ news_editor_db_user }}', 'news.settings', 'DELETE')
+              AND NOT has_table_privilege('{{ news_editor_db_user }}', 'news.items', 'UPDATE')
+              AND has_table_privilege('{{ news_n8n_db_user }}', 'news.items', 'INSERT')
+              AND NOT has_table_privilege('{{ news_n8n_db_user }}', 'news.sources', 'UPDATE')
+              AND NOT has_schema_privilege('{{ news_editor_db_user }}', 'news', 'CREATE')
+              AND NOT has_schema_privilege('{{ news_n8n_db_user }}', 'news', 'CREATE')
+              AND NOT has_database_privilege('public', '{{ codex_db_name }}', 'CONNECT');"
+      register: codex_news_priv
+      changed_when: false
+      failed_when: codex_news_priv.rc != 0 or codex_news_priv.stdout | trim != 't'

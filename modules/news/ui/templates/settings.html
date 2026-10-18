@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}Settings{% endblock %}
+{% block content %}
+<h1>Settings</h1>
+<p class="muted">How much news is collected, what reaches the AI and what ends up in the e-mail. A saved change applies from the next workflow run.</p>
+
+<form method="post" data-track>
+  <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+  {% for n, st in stages.items() if st.rows %}
+  <section class="card" id="stage-{{ n }}">
+    <h2>{{ n }} · {{ st.title }}</h2>
+    <p class="muted small">{{ st.intro }}</p>
+    {% for r in st.rows %}
+      <div class="setting">
+        <div class="setting-head">
+          <div class="setting-key">{{ r.help.label }}</div>
+          <div class="setting-input">
+            <input type="hidden" name="o__{{ r.key }}" value="{{ r.value|num }}">
+            {% if r.help.switch %}
+              <select name="v__{{ r.key }}">
+                <option value="1" {{ 'selected' if r.value == 1 }}>On</option>
+                <option value="0" {{ 'selected' if r.value == 0 }}>Off</option>
+              </select>
+            {% else %}
+              <input class="num" name="v__{{ r.key }}" value="{{ r.value|num }}" type="number"
+                     min="{{ r.help.min }}" max="{{ r.help.max }}" step="1">
+            {% endif %}
+            <div class="muted small">{% if not r.help.switch %}range {{ r.help.min }}–{{ r.help.max }} · {% endif %}changed {{ r.updated_at|dt }}</div>
+          </div>
+        </div>
+        <p>{{ r.help.what }}</p>
+        <div class="effects">
+          <div><span class="tag">{{ 'On' if r.help.switch else 'Higher value' }}</span> {{ r.help['raise'] }}</div>
+          <div><span class="tag">{{ 'Off' if r.help.switch else 'Lower value' }}</span> {{ r.help['lower'] }}</div>
+        </div>
+      </div>
+    {% endfor %}
+  </section>
+  {% endfor %}
+
+  {% if other %}
+  <section class="card">
+    <h2>Other settings</h2>
+    {% for r in other %}
+      <div class="setting"><div class="setting-head">
+        <div class="setting-key">{{ r.description }}</div>
+        <div class="setting-input">
+          <input type="hidden" name="o__{{ r.key }}" value="{{ r.value|num }}">
+          <input class="num" name="v__{{ r.key }}" value="{{ r.value|num }}">
+        </div>
+      </div></div>
+    {% endfor %}
+  </section>
+  {% endif %}
+
+  <div class="actions sticky">
+    <button class="btn primary" type="submit">Save changes</button>
+    <a class="btn ghost" href="{{ url_for('settings_page') }}">Discard</a>
+  </div>
+</form>
+{% endblock %}

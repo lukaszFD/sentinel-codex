@@ -1,0 +1,12 @@
+{% macro status_tag(status) -%}
+  {%- set s = ITEM_STATUS.get(status, (status, '')) -%}
+  <span class="tag {{ s[1] }}">{{ s[0] }}</span>
+{%- endmacro %}
+
+{% macro score(value) -%}
+  {%- if value %}<span class="score mini s{{ value }}">{{ value }}</span>{% else %}<span class="muted">–</span>{% endif -%}
+{%- endmacro %}
+
+{% macro digest_tag(status) -%}
+  <span class="tag {{ {'sent': 'ok', 'error': 'bad', 'sending': 'warn'}.get(status, '') }}">{{ status }}</span>
+{%- endmacro %}
